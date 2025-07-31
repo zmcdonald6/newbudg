@@ -113,7 +113,7 @@ elif st.session_state.authenticated:
 
     # File Selection
     st.header("📁 Select Budget and Expense Files")
-    creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPE)
+    creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
     client = gspread.authorize(creds)
     upload_log = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
     records = upload_log.get_all_records()
