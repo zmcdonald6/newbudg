@@ -1,37 +1,40 @@
 # Author: Zedaine McDonald
 
-import gspread
 import os
 import mimetypes
 from datetime import datetime
+import tempfile
+import gspread
+import streamlit as st
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.oauth2 import service_account
-import tempfile
-import streamlit as st
 
 # Constants
+SHEET_ID = "1VxrFw6txf_XFf0cxzMbPGHnOn8N5JGeeS0ve5lfLqCU"
+PARENT_FOLDER_ID = "10bL1POPWVyCcD7O1-Dokklq6wD2kG39-"
+
 SCOPE = [
     "https://www.googleapis.com/auth/drive",
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive.file"
 ]
 
-SERVICE_ACCOUNT_FILE = "service_account.json"
-SHEET_ID = "1VxrFw6txf_XFf0cxzMbPGHnOn8N5JGeeS0ve5lfLqCU"  # Your actual Google Sheet ID
-PARENT_FOLDER_ID = "10bL1POPWVyCcD7O1-Dokklq6wD2kG39-"  # 'Files' folder inside BudgApp shared drive
+# Load credentials from Streamlit secrets
+creds = service_account.Credentials.from_service_account_info(
+    dict(st.secrets["GOOGLE"]), scopes=SCOPE
+)
 
 def upload_to_drive_and_log(file, file_type, uploader_email, custom_name):
-    # ✅ Save file to a temp file and close handle immediately (Windows compatible)
+    # Save uploaded file to temp path
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
         tmp.write(file.getvalue())
         temp_path = tmp.name
 
-    # ✅ Auth
-    creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
+    # Initialize Drive service
     drive_service = build("drive", "v3", credentials=creds)
 
-    # ✅ Set metadata and upload
+    # Prepare metadata
     mime_type = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
     metadata = {
         "name": custom_name + ".xlsx",
@@ -41,6 +44,7 @@ def upload_to_drive_and_log(file, file_type, uploader_email, custom_name):
 
     media = MediaFileUpload(temp_path, mimetype=mime_type, resumable=False)
 
+    # Upload to Drive
     uploaded_file = drive_service.files().create(
         body=metadata,
         media_body=media,
@@ -50,7 +54,7 @@ def upload_to_drive_and_log(file, file_type, uploader_email, custom_name):
 
     file_id = uploaded_file.get("id")
 
-    # ✅ Share the file publicly (optional)
+    # Make it publicly accessible
     try:
         drive_service.permissions().create(
             fileId=file_id,
@@ -62,13 +66,13 @@ def upload_to_drive_and_log(file, file_type, uploader_email, custom_name):
 
     file_url = f"https://drive.google.com/uc?id={file_id}"
 
-    # ✅ Safely delete temp file
+    # Delete temp file
     try:
         os.remove(temp_path)
     except Exception as e:
         print("⚠️ Failed to delete temp file:", e)
 
-    # ✅ Log to Google Sheet
+    # Log in Google Sheet
     try:
         client = gspread.authorize(creds)
         sheet = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
