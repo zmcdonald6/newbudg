@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 def process_budget(file_path_or_bytes):
-    df_budget = pd.read_excel(file_path_or_bytes, sheet_name='Sheet1', skiprows=5)
+    df_budget = pd.read_excel(file_path_or_bytes, sheet_name=0, skiprows=5)
     df_budget.dropna(how='all', inplace=True)
     df_budget.dropna(axis=1, how='all', inplace=True)
     df_budget.columns = ['Description'] + [str(i) for i in range(1, 13)] + ['Total']
