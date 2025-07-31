@@ -12,3 +12,4 @@ base64
 datetime
 io
 mimetypes
+openpyxl
