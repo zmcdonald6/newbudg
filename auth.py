@@ -1,25 +1,21 @@
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import streamlit as st
+from google.oauth2 import service_account
 from datetime import datetime
 import requests
-from google.oauth2 import service_account
 
+# Set up credentials from Streamlit secrets
 SCOPE = [
-    "https://www.googleapis.com/auth/drive",
     "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive.file"
+    "https://www.googleapis.com/auth/drive"
 ]
 
-def get_user_credentials():
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds = ServiceAccountCredentials.from_service_account_info(
-        dict(st.secrets["GOOGLE"]), scopes = SCOPE
-    )
-    client = gspread.authorize(creds)
+creds = service_account.Credentials.from_service_account_info(
+    dict(st.secrets["GOOGLE"]), scopes=SCOPE
+)
 
+def get_user_credentials():
+    client = gspread.authorize(creds)
     sheet = client.open_by_key("1VxrFw6txf_XFf0cxzMbPGHnOn8N5JGeeS0ve5lfLqCU")
     worksheet = sheet.worksheet("Users")
     records = worksheet.get_all_records()
@@ -28,8 +24,8 @@ def get_user_credentials():
     for idx, row in enumerate(records):
         usernames[row["email"]] = {
             "name": row["name"],
-            "first_login": row.get("first_login", "FALSE").upper()=="TRUE",
-            "password": row["hashed_password"],  # Already base64-encoded string
+            "first_login": row.get("first_login", "FALSE").upper() == "TRUE",
+            "password": row["hashed_password"],  # base64 string
             "row_index": idx + 2
         }
 
@@ -43,11 +39,6 @@ def get_ip_address():
         return "Unavailable"
 
 def log_activity(email, activity_type):
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
     client = gspread.authorize(creds)
     sheet = client.open_by_key("1VxrFw6txf_XFf0cxzMbPGHnOn8N5JGeeS0ve5lfLqCU").worksheet("LoginLogs")
 
