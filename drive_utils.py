@@ -8,6 +8,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2 import service_account
 import tempfile
+import streamlit as st
 
 # Constants
 SCOPE = [
@@ -27,7 +28,7 @@ def upload_to_drive_and_log(file, file_type, uploader_email, custom_name):
         temp_path = tmp.name
 
     # ✅ Auth
-    creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPE)
+    creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
     drive_service = build("drive", "v3", credentials=creds)
 
     # ✅ Set metadata and upload
