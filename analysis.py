@@ -6,7 +6,13 @@ def process_budget(file_path_or_bytes):
     df_budget = pd.read_excel(file_path_or_bytes, sheet_name=0, skiprows=5)
     df_budget.dropna(how='all', inplace=True)
     df_budget.dropna(axis=1, how='all', inplace=True)
-    df_budget.columns = ['Description'] + [str(i) for i in range(1, 13)] + ['Total']
+
+    # Rename columns using first row with numbers (e.g., 1 to 12 and Total)
+    # Find the row with months (likely row index 1 or 2)
+    header_row_index = df_budget[df_budget.iloc[:, 0].astype(str).str.contains("TYPE OF EXPENDITURE", na=False)].index[0] + 1
+    df_budget.columns = ['Description'] + [str(i) for i in range(1, 13)] + ['Total'] + list(df_budget.columns[len(['Description'] + [str(i) for i in range(1, 13)] + ['Total']):])
+
+    df_budget = df_budget.iloc[header_row_index + 1:]
     df_budget.reset_index(drop=True, inplace=True)
 
     structured = []
