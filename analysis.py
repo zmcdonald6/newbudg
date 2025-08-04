@@ -3,23 +3,25 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 def process_budget(file_path_or_bytes):
-    df_budget = pd.read_excel(file_path_or_bytes, sheet_name=0, skiprows=5)
-    df_budget.dropna(how='all', inplace=True)
-    df_budget.dropna(axis=1, how='all', inplace=True)
+    # Step 1: Read and clean
+    df = pd.read_excel(file_path_or_bytes, sheet_name=0, skiprows=5)
+    df.dropna(how="all", inplace=True)
+    df.dropna(axis=1, how="all", inplace=True)
+    df.reset_index(drop=True, inplace=True)
 
-    # Rename columns using first row with numbers (e.g., 1 to 12 and Total)
-    # Find the row with months (likely row index 1 or 2)
-    header_row_index = df_budget[df_budget.iloc[:, 0].astype(str).str.contains("TYPE OF EXPENDITURE", na=False)].index[0] + 1
-    df_budget.columns = ['Description'] + [str(i) for i in range(1, 13)] + ['Total'] + list(df_budget.columns[len(['Description'] + [str(i) for i in range(1, 13)] + ['Total']):])
+    # Step 2: Rename columns manually to match your known format
+    new_columns = ['Description'] + [str(i) for i in range(1, 13)] + ['Total']
+    df.columns = new_columns + list(df.columns[len(new_columns):])  # keep extras if any
 
-    df_budget = df_budget.iloc[header_row_index + 1:]
-    df_budget.reset_index(drop=True, inplace=True)
+    # Step 3: Skip first 2 rows — those are still header/label clutter
+    df = df.iloc[2:].reset_index(drop=True)
 
+    # Step 4: Build structured format
     structured = []
     current_category = None
 
-    for _, row in df_budget.iterrows():
-        desc = str(row['Description']).strip()
+    for _, row in df.iterrows():
+        desc = str(row["Description"]).strip()
         if pd.isna(desc):
             continue
         if desc and desc[0].isupper() and ')' in desc:
@@ -41,4 +43,7 @@ def process_budget(file_path_or_bytes):
     df_structured = pd.DataFrame(structured)
     df_structured["Monthly"] = df_structured["Monthly"].apply(lambda x: np.array(x, dtype=float))
     df_structured["Total"] = pd.to_numeric(df_structured["Total"], errors="coerce").fillna(0)
+
     return df_structured
+
+
