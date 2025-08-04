@@ -17,13 +17,12 @@ from analysis import process_budget
 users = get_user_credentials()["usernames"]
 INACTIVITY_LIMIT_MINUTES = 10
 SHEET_ID = "1VxrFw6txf_XFf0cxzMbPGHnOn8N5JGeeS0ve5lfLqCU"
-SERVICE_ACCOUNT_FILE = "service_account.json"
 SCOPE = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
 ]
 
-# Init session state
+# Initialize session
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
     st.session_state.email = ""
@@ -33,7 +32,7 @@ if "authenticated" not in st.session_state:
     st.session_state.last_active = datetime.now()
     st.session_state.user_record = {}
 
-# Inactivity timeout
+# Timeout
 if st.session_state.authenticated:
     if datetime.now() - st.session_state.last_active > timedelta(minutes=INACTIVITY_LIMIT_MINUTES):
         st.warning("⏱️ Session timed out due to inactivity.")
@@ -65,37 +64,25 @@ if not st.session_state.authenticated:
                         st.rerun()
                     else:
                         st.error("❌ Incorrect password.")
-                        st.rerun()
                 except Exception as e:
-                    st.error(f"Hash decoding or check failed: {e}")
-                    st.rerun()
+                    st.error(f"Hash decoding failed: {e}")
             else:
                 st.error("❌ Email not found.")
-                st.rerun()
 
-# Post-login view
+# Main dashboard
 elif st.session_state.authenticated:
     st.title("MSGIT Budget Reporter")
     log_activity(st.session_state.email, "Login")
 
-    #Logout button
     if st.button("🚪 Logout"):
         log_activity(st.session_state.email, "Logout")
-        st.session_state.authenticated = False
-        st.session_state.email = ""
-        st.session_state.name = ""
-        st.session_state.login_email = ""
-        st.session_state.login_password = ""
-        st.session_state.last_active = None
-        st.session_state.user_record = {}
+        for key in st.session_state.keys():
+            st.session_state[key] = False if key == "authenticated" else ""
         st.rerun()
-
-
-    user = st.session_state.get("user_record")
 
     st.success(f"✅ Logged in as {st.session_state.name}")
 
-    # Upload UI
+    # Upload interface
     st.header("⬆️ Upload File (Budget or Expense)")
     with st.form("upload_form"):
         uploaded_file = st.file_uploader("Choose a file", type=["xlsx"])
@@ -111,7 +98,7 @@ elif st.session_state.authenticated:
                 st.success(f"✅ Uploaded and logged successfully.")
                 st.write(f"[View File]({url})")
 
-    # File Selection
+    # Select files
     st.header("📁 Select Budget and Expense Files")
     creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
     client = gspread.authorize(creds)
@@ -120,76 +107,92 @@ elif st.session_state.authenticated:
 
     if records:
         df_files = pd.DataFrame(records)
-        if "file_type" in df_files.columns:
-            budget_files = df_files[df_files["file_type"] == "budget"]
-            expense_files = df_files[df_files["file_type"] == "expense"]
+        budget_files = df_files[df_files["file_type"] == "budget"]
+        expense_files = df_files[df_files["file_type"] == "expense"]
 
-            selected_budget = st.selectbox("📘 Select Budget File", budget_files["file_name"].tolist())
-            selected_expense = st.selectbox("💸 Select Expense File", expense_files["file_name"].tolist())
+        selected_budget = st.selectbox("📘 Select Budget File", budget_files["file_name"].tolist())
+        selected_expense = st.selectbox("💸 Select Expense File", expense_files["file_name"].tolist())
 
-            if selected_budget and selected_expense:
-                budget_url = budget_files[budget_files["file_name"] == selected_budget]["file_url"].values[0]
-                expense_url = expense_files[expense_files["file_name"] == selected_expense]["file_url"].values[0]
+        if selected_budget and selected_expense:
+            budget_url = budget_files[budget_files["file_name"] == selected_budget]["file_url"].values[0]
+            expense_url = expense_files[expense_files["file_name"] == selected_expense]["file_url"].values[0]
 
-                df_budget = process_budget(BytesIO(requests.get(budget_url).content))
-                df_expense = pd.read_excel(BytesIO(requests.get(expense_url).content))
+            df_budget = process_budget(BytesIO(requests.get(budget_url).content))
+            df_expense = pd.read_excel(BytesIO(requests.get(expense_url).content))
 
-                # Filters
-                # Filters
-                categories = sorted(df_expense["Category"].dropna().unique().tolist())
-                vendors = sorted(df_expense["Vendor"].dropna().unique().tolist())
+            # ✅ Normalize column names
+            col_map = {
+                "date": "Invoice Date", "invoice date": "Invoice Date",
+                "vendorname": "Vendor", "vendor": "Vendor",
+                "subcategory": "Sub-Category", "sub-category": "Sub-Category",
+                "category": "Category",
+                "amount": "Amount", "cost": "Amount", "totalcost": "Amount"
+            }
+            df_expense.rename(columns=lambda x: col_map.get(x.strip().lower(), x.strip()), inplace=True)
 
-                st.markdown("### 🔍 Filter Data")
+            # ✅ Validate required columns
+            required = ["Category", "Sub-Category", "Invoice Date", "Vendor", "Amount"]
+            missing = [c for c in required if c not in df_expense.columns]
+            if missing:
+                st.error(f"❌ Expense sheet is missing: {', '.join(missing)}")
+                st.stop()
 
-                with st.expander("📂 Filter by Categories"):
-                    select_all_cat = st.checkbox("Select All Categories", value=True, key="all_categories")
-                    selected_categories = st.multiselect(
-                        "Choose Categories",
-                        options=categories,
-                        default=categories if st.session_state.get("all_categories") else []
-                    )
+            # ✅ Parse mixed-format invoice dates
+            def parse_date_safely(date_str):
+                for fmt in ("%d/%m/%Y", "%m/%d/%Y"):
+                    try:
+                        return pd.to_datetime(date_str, format=fmt)
+                    except:
+                        continue
+                return pd.NaT
 
-                with st.expander("🏷️ Filter by Vendors"):
-                    select_all_ven = st.checkbox("Select All Vendors", value=True, key="all_vendors")
-                    selected_vendors = st.multiselect(
-                        "Choose Vendors",
-                        options=vendors,
-                        default=vendors if st.session_state.get("all_vendors") else []
-                    )
+            df_expense["Month"] = df_expense["Invoice Date"].apply(parse_date_safely).dt.strftime('%B')
 
-                filtered_df = df_expense[
-                    df_expense["Category"].isin(selected_categories) &
-                    df_expense["Vendor"].isin(selected_vendors)
-                ].copy()
+            # Filter UI
+            st.markdown("### 🔍 Filter Data")
+            with st.expander("📂 Filter by Categories"):
+                all_cats = sorted(df_expense["Category"].dropna().unique().tolist())
+                select_all_cat = st.checkbox("Select All Categories", value=True, key="all_categories")
+                selected_categories = st.multiselect("Choose Categories", options=all_cats, default=all_cats if select_all_cat else [])
 
-                filtered_df["Month"] = pd.to_datetime(filtered_df["Date"]).dt.strftime('%B')
+            with st.expander("🏷️ Filter by Vendors"):
+                all_vendors = sorted(df_expense["Vendor"].dropna().unique().tolist())
+                select_all_ven = st.checkbox("Select All Vendors", value=True, key="all_vendors")
+                selected_vendors = st.multiselect("Choose Vendors", options=all_vendors, default=all_vendors if select_all_ven else [])
 
-                merged_data = pd.merge(
-                    filtered_df,
-                    df_budget[df_budget["Subcategory"].notna()],
-                    how="left",
-                    left_on=["Category", "Sub-Category"],
-                    right_on=["Category", "Subcategory"]
-                )
+            # Apply filters
+            filtered_df = df_expense[
+                df_expense["Category"].isin(selected_categories) &
+                df_expense["Vendor"].isin(selected_vendors)
+            ].copy()
 
-                final_view = merged_data[["Category", "Sub-Category", "Vendor", "Total", "Amount", "Month"]]
-                final_view.columns = ["Category", "Sub-category", "Vendor", "Amount Budgeted", "Amount Spent", "Month"]
-                final_view["Variance"] = final_view["Amount Budgeted"] - final_view["Amount Spent"]
+            # Merge with budget
+            merged = pd.merge(
+                filtered_df,
+                df_budget[df_budget["Subcategory"].notna()],
+                how="left",
+                left_on=["Category", "Sub-Category"],
+                right_on=["Category", "Subcategory"]
+            )
 
-                st.markdown("### 📄 Expense vs Budget Table")
-                st.dataframe(final_view[[
-                "Category", "Sub-category", "Vendor",
-                "Amount Budgeted", "Amount Spent", "Variance", "Month"
-                ]])
+            # Final display table
+            final_view = merged[["Category", "Sub-Category", "Vendor", "Total", "Amount", "Month"]]
+            final_view.columns = ["Category", "Sub-category", "Vendor", "Amount Budgeted", "Amount Spent", "Month"]
+            final_view["Variance"] = final_view["Amount Budgeted"] - final_view["Amount Spent"]
 
-                category_summary = final_view.groupby("Category")["Amount Spent"].sum().reset_index()
+            st.markdown("### 📄 Expense vs Budget Table")
+            st.dataframe(final_view)
 
-                fig, ax = plt.subplots(figsize=(8, 5))
-                ax.bar(category_summary["Category"], category_summary["Amount Spent"])
-                ax.set_xlabel("Category")
-                ax.set_ylabel("Total Spent")
-                ax.set_title("Total Spent by Category")
-                plt.xticks(rotation=45)
-                st.pyplot(fig)
+            # Bar chart summary
+            category_summary = final_view.groupby("Category")["Amount Spent"].sum().reset_index()
+            fig, ax = plt.subplots(figsize=(8, 5))
+            ax.bar(category_summary["Category"], category_summary["Amount Spent"])
+            ax.set_xlabel("Category")
+            ax.set_ylabel("Total Spent")
+            ax.set_title("Total Spent by Category")
+            plt.xticks(rotation=45)
+            st.pyplot(fig)
     else:
         st.info("📭 No uploaded files yet. Please upload at least one budget and one expense file.")
+
+
