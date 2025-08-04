@@ -184,15 +184,16 @@ elif st.session_state.authenticated:
             st.dataframe(final_view)
 
             # Bar chart summary
-            category_summary = final_view.groupby("Category")["Amount Spent"].sum().reset_index()
-            fig, ax = plt.subplots(figsize=(8, 5))
-            ax.bar(category_summary["Category"], category_summary["Amount Spent"])
-            ax.set_xlabel("Category")
-            ax.set_ylabel("Total Spent")
-            ax.set_title("Total Spent by Category")
-            plt.xticks(rotation=45)
-            st.pyplot(fig)
+            #category_summary = final_view.groupby("Category")["Amount Spent"].sum().reset_index()
+            #fig, ax = plt.subplots(figsize=(8, 5))
+            #ax.bar(category_summary["Category"], category_summary["Amount Spent"])
+            #ax.set_xlabel("Category")
+            #ax.set_ylabel("Total Spent")
+            #ax.set_title("Total Spent by Category")
+            #plt.xticks(rotation=45)
+            #st.pyplot(fig)
     else:
         st.info("📭 No uploaded files yet. Please upload at least one budget and one expense file.")
+
 
 
