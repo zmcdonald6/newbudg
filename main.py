@@ -166,34 +166,37 @@ elif st.session_state.authenticated:
                 df_expense["Vendor"].isin(selected_vendors)
             ].copy()
 
+            # Rename for alignment
+            df_budget = df_budget.rename(columns={"Subcategory": "Sub-Category"})
+
             # Merge with budget
             merged = pd.merge(
                 filtered_df,
-                df_budget[df_budget["Subcategory"].notna()],
+                df_budget[df_budget["Sub-Category"].notna()],
                 how="left",
-                left_on=["Category", "Sub-Category"],
-                right_on=["Category", "Subcategory"]
+                on=["Category", "Sub-Category"]
             )
 
             # Final display table
             final_view = merged[["Category", "Sub-Category", "Vendor", "Total", "Amount", "Month"]]
-            final_view.columns = ["Category", "Sub-category", "Vendor", "Amount Budgeted", "Amount Spent", "Month"]
+            final_view.columns = ["Category", "Sub-Category", "Vendor", "Amount Budgeted", "Amount Spent", "Month"]
             final_view["Variance"] = final_view["Amount Budgeted"] - final_view["Amount Spent"]
 
             st.markdown("### 📄 Expense vs Budget Table")
             st.dataframe(final_view)
 
             # Bar chart summary
-            #category_summary = final_view.groupby("Category")["Amount Spent"].sum().reset_index()
-            #fig, ax = plt.subplots(figsize=(8, 5))
-            #ax.bar(category_summary["Category"], category_summary["Amount Spent"])
-            #ax.set_xlabel("Category")
-            #ax.set_ylabel("Total Spent")
-            #ax.set_title("Total Spent by Category")
-            #plt.xticks(rotation=45)
-            #st.pyplot(fig)
+            category_summary = final_view.groupby("Category")["Amount Spent"].sum().reset_index()
+            fig, ax = plt.subplots(figsize=(8, 5))
+            ax.bar(category_summary["Category"], category_summary["Amount Spent"])
+            ax.set_xlabel("Category")
+            ax.set_ylabel("Total Spent")
+            ax.set_title("Total Spent by Category")
+            plt.xticks(rotation=45)
+            st.pyplot(fig)
     else:
         st.info("📭 No uploaded files yet. Please upload at least one budget and one expense file.")
+
 
 
 
