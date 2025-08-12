@@ -18,3 +18,5 @@ base64_hash = generate_base64_bcrypt(password)
 print("Paste this into your Google Sheet:")
 print(base64_hash)
 """
+
+print (generate_base64_bcrypt("password"))
