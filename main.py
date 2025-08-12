@@ -17,42 +17,11 @@ from fxhelper import get_usd_rates, convert_row_amount_to_usd
 # Constants
 
 INACTIVITY_LIMIT_MINUTES = 10
-from settings import SHEET_ID, google_credentials
+SHEET_ID = "1VxrFw6txf_XFf0cxzMbPGHnOn8N5JGeeS0ve5lfLqCU"
 SCOPE = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
 ]
-
-@st.cache_data(ttl=60, show_spinner=False)
-def get_sheet_records(sheet_name: str):
-    """Lightweight, cached read of a single worksheet -> list of dicts."""
-    creds = google_credentials(SCOPE)
-    client = gspread.authorize(creds)
-    ws = client.open_by_key(SHEET_ID).worksheet(sheet_name)
-    return ws.get_all_records()
-
-def _open_ws(sheet_name: str):
-    if not SHEET_ID or not str(SHEET_ID).strip():
-        st.error("SHEET_ID is not configured. Add it to secrets or env.")
-        st.stop()
-    creds = google_credentials(SCOPE)
-    client = gspread.authorize(creds)
-    try:
-        ss = client.open_by_key(SHEET_ID)
-    except Exception as e:
-        sa = getattr(creds, 'service_account_email', '(unknown)')
-        st.error(f"Cannot open spreadsheet {SHEET_ID}. Is it shared with {sa}? Details: {e}")
-        st.stop()
-    try:
-        return ss.worksheet(sheet_name)
-    except Exception as e:
-        st.error(f"Worksheet `{sheet_name}` not found. Details: {e}")
-        st.stop()
-    """Lightweight, cached read of a single worksheet -> list of dicts."""
-    creds = google_credentials(SCOPE)
-    client = gspread.authorize(creds)
-    ws = client.open_by_key(SHEET_ID).worksheet(sheet_name)
-    return ws.get_all_records()
 
 # Initialize session
 if "authenticated" not in st.session_state:
@@ -132,7 +101,7 @@ elif st.session_state.force_pw_change:
                     encoded = base64.b64encode(new_hash).decode()
 
                     # Update Google Sheet
-                    creds = google_credentials(SCOPE)
+                    creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
                     client = gspread.authorize(creds)
                     ws = client.open_by_key(SHEET_ID).worksheet("Users")
 
@@ -199,15 +168,15 @@ elif st.session_state.authenticated:
         with st.expander("User Management", expanded=False):
             # --- Sheets setup (local to this expander) ---
             try:
-                creds = google_credentials(SCOPE)
+                creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
                 client = gspread.authorize(creds)
-                users_ws = _open_ws("Users")
+                users_ws = client.open_by_key(SHEET_ID).worksheet("Users")
             except Exception as e:
                 st.error(f"Couldn't open Users sheet: {e}")
                 st.stop()
 
             # --- Load & show users ---
-            rows = get_sheet_records("Users")
+            rows = users_ws.get_all_records()
             df_users = pd.DataFrame(rows) if rows else pd.DataFrame(
                 columns=["name","username","email","hashed_password","role","first_login"]
             )
@@ -221,7 +190,6 @@ elif st.session_state.authenticated:
                 new_email = st.text_input("Email")
                 new_role = st.selectbox("Role", ["user", "admin"])
                 new_password_plain = st.text_input("Initial Password", type="password")
-                require_pw_change = st.checkbox("Require password change on first login?", value=True)
                 add_submit = st.form_submit_button("➕ Add User")
 
                 if add_submit:
@@ -233,27 +201,26 @@ elif st.session_state.authenticated:
                         try:
                             hashed = bcrypt.hashpw(new_password_plain.encode(), bcrypt.gensalt())
                             encoded = base64.b64encode(hashed).decode()
+                            # Force password change on first login by default
                             users_ws.append_row([
-                                new_name, new_username, new_email, encoded, new_role,
-                                "TRUE" if require_pw_change else "FALSE"
+                                new_name, new_username, new_email, encoded, new_role, "TRUE"
                             ])
-                            st.success("User added.")
+                            st.success("User added. They will be required to change password on first login.")
                             get_user_credentials.clear()
-                            get_sheet_records.clear()
                             st.rerun()
                         except Exception as e:
                             st.error(f"Failed to add user: {e}")
-            
+
             st.divider()
-            st.subheader("Edit / Remove User")
+            st.subheader("Reset Password / Remove User")
 
             emails = [r.get("email","") for r in rows]
             if not emails:
                 st.info("No users found.")
             else:
-                sel_email = st.selectbox("Select user by email", emails, key="edit_sel_email")
-                selected = next((r for r in rows if r.get("email","") == sel_email), None)
+                sel_email = st.selectbox("Select user by email", emails)
 
+                # helper: exact-match row by email (no substring false-positives)
                 def _find_row_by_email(ws, email: str) -> int | None:
                     header = ws.row_values(1)
                     if "email" not in header:
@@ -265,71 +232,53 @@ elif st.session_state.authenticated:
                             return i
                     return None
 
-                with st.form("admin_edit_user_form", clear_on_submit=False):
-                    name_edit = st.text_input("Name", value=selected.get("name","") if selected else "", key="edit_name")
-                    username_edit = st.text_input("Username", value=selected.get("username","") if selected else "", key="edit_username")
-                    role_edit = st.selectbox(
-                        "Role", ["user","admin"],
-                        index=0 if not selected or str(selected.get("role","user")).strip().lower() != "admin" else 1,
-                        key="edit_role"
-                    )
-                    first_login_edit = st.checkbox(
-                        "Require password change on next login?",
-                        value=(str(selected.get("first_login","FALSE")).upper()=="TRUE") if selected else False,
-                        key="edit_first_login"
-                    )
-                    reset_pw = st.checkbox("Reset password?", key="edit_reset_pw")
-                    new_pw_plain = st.text_input("New Password (only used if Reset is checked)", type="password", key="edit_new_pw")
-                    confirm_delete = st.checkbox("Yes, delete this user", key="edit_confirm_delete")
-
+                with st.form("admin_reset_remove_form"):
+                    new_pw_plain = st.text_input("New Password", type="password")
                     col1, col2 = st.columns(2)
-                    save = col1.form_submit_button("💾 Save Changes")
-                    remove = col2.form_submit_button("🗑️ Remove User")
+                    do_reset = col1.form_submit_button("🔑 Reset Password")
+                    confirm = col2.checkbox("Yes, delete this user")
+                    do_delete = col2.form_submit_button("🗑️ Remove User")
 
-                    if save:
-                        try:
-                            row_no = _find_row_by_email(users_ws, sel_email)
-                            if not row_no:
-                                st.error("Couldn't locate user row.")
-                            else:
-                                header = users_ws.row_values(1)
-                                current_vals = users_ws.row_values(row_no)
-                                current = {h: (current_vals[i] if i < len(current_vals) else "") for i, h in enumerate(header)}
+                    if do_reset:
+                        if not new_pw_plain:
+                            st.error("Enter a new password.")
+                        else:
+                            try:
+                                row_no = _find_row_by_email(users_ws, sel_email)
+                                if not row_no:
+                                    st.error("Couldn't locate user row.")
+                                else:
+                                    header = users_ws.row_values(1)
+                                    row_vals = users_ws.row_values(row_no)
+                                    # Pad to header length
+                                    while len(row_vals) < len(header):
+                                        row_vals.append("")
+                                    # Map header -> index
+                                    h2i = {h: i for i, h in enumerate(header)}
 
-                                current["name"] = name_edit
-                                current["username"] = username_edit
-                                current["role"] = role_edit
-                                current["first_login"] = "TRUE" if first_login_edit else "FALSE"
-
-                                if reset_pw:
-                                    if not new_pw_plain:
-                                        st.error("Enter a new password to reset.")
-                                        st.stop()
+                                    # Set new password + force first_login to TRUE
                                     new_h = bcrypt.hashpw(new_pw_plain.encode(), bcrypt.gensalt())
-                                    current["hashed_password"] = base64.b64encode(new_h).decode()
+                                    row_vals[h2i["hashed_password"]] = base64.b64encode(new_h).decode()
+                                    row_vals[h2i["first_login"]] = "TRUE"
 
-                                def _col_letters(n: int) -> str:
-                                    s = ""
-                                    while n > 0:
-                                        n, r = divmod(n - 1, 26)
-                                        s = chr(65 + r) + s
-                                    return s
-                                end_col_letter = _col_letters(len(header))
+                                    # Compute range like A{row}:<end>{row}
+                                    def _col_letters(n: int) -> str:
+                                        s = ""
+                                        while n > 0:
+                                            n, r = divmod(n - 1, 26)
+                                            s = chr(65 + r) + s
+                                        return s
+                                    end_col_letter = _col_letters(len(header))
 
-                                users_ws.update(
-                                    f"A{row_no}:{end_col_letter}{row_no}",
-                                    [[current.get(h, "") for h in header]]
-                                )
-                                st.success("User updated.")
-                                from auth import get_user_credentials
-                                get_user_credentials.clear()
-                                get_sheet_records.clear()
-                                st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to update user: {e}")
+                                    users_ws.update(f"A{row_no}:{end_col_letter}{row_no}", [row_vals])
+                                    st.success("Password reset. User will be forced to change it on next login.")
+                                    get_user_credentials.clear()
+                                    st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to reset password: {e}")
 
-                    if remove:
-                        if not confirm_delete:
+                    if do_delete:
+                        if not confirm:
                             st.error("Please check “Yes, delete this user” to confirm.")
                         else:
                             try:
@@ -339,25 +288,23 @@ elif st.session_state.authenticated:
                                 else:
                                     users_ws.delete_rows(row_no)
                                     st.success("User removed.")
-                                    from auth import get_user_credentials
                                     get_user_credentials.clear()
-                                    get_sheet_records.clear()
                                     st.rerun()
                             except Exception as e:
                                 st.error(f"Failed to remove user: {e}")
-                # To View Logins
+        # To View Logins
         with st.expander("Login Activity", expanded=False):
             # Sheets setup
             try:
-                creds = google_credentials(SCOPE)
+                creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
                 client = gspread.authorize(creds)
-                logs_ws = _open_ws("LoginLogs")
+                logs_ws = client.open_by_key(SHEET_ID).worksheet("LoginLogs")
             except Exception as e:
                 st.error(f"Couldn't open LoginLogs sheet: {e}")
                 st.stop()
 
             # Load logs (view-only)
-            rows = get_sheet_records("LoginLogs")  # expected columns: email, activity_type, timestamp, ip_address
+            rows = logs_ws.get_all_records()  # expected columns: email, activity_type, timestamp, ip_address
             df_logs = pd.DataFrame(rows) if rows else pd.DataFrame(
                 columns=["email", "activity_type", "timestamp", "ip_address"]
             )
@@ -413,15 +360,15 @@ elif st.session_state.authenticated:
         with st.expander("File Management", expanded=False):
              # Sheets setup
             try:
-                creds = google_credentials(SCOPE)
+                creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
                 client = gspread.authorize(creds)
-                files_ws = _open_ws("UploadedFiles")
+                files_ws = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
             except Exception as e:
                 st.error(f"Couldn't open UploadedFiles sheet: {e}")
                 st.stop()
 
             # --- View files ---
-            rows = get_sheet_records("UploadedFiles")  # expects headers: file_name, file_type, uploader_email, timestamp, file_url
+            rows = files_ws.get_all_records()  # expects headers: file_name, file_type, uploader_email, timestamp, file_url
             df_files = pd.DataFrame(rows) if rows else pd.DataFrame(
                 columns=["file_name", "file_type", "uploader_email", "timestamp", "file_url"]
             )
@@ -447,8 +394,6 @@ elif st.session_state.authenticated:
                         if url:
                             st.success("✅ Uploaded and logged successfully.")
                             st.write(f"[View File]({url})")
-                            get_sheet_records.clear()
-                            get_user_credentials.clear()
                             st.rerun()
                         else:
                             st.error("Upload or logging failed.")
@@ -519,10 +464,10 @@ elif st.session_state.authenticated:
     # Generate Report (collapsed, no auto-selection)
     # =========================================================
     with st.expander("🧾 Generate Report", expanded=False):
-        creds = google_credentials(SCOPE)
+        creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
         client = gspread.authorize(creds)
         upload_log = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
-        records = get_sheet_records("UploadedFiles")
+        records = upload_log.get_all_records()
 
         if not records:
             st.info("📭 No uploaded files yet. Please upload at least one budget and one expense file.")

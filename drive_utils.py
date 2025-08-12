@@ -9,9 +9,11 @@ import streamlit as st
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from settings import SHEET_ID, PARENT_FOLDER_ID, google_credentials
 
 # Constants
+SHEET_ID = "1VxrFw6txf_XFf0cxzMbPGHnOn8N5JGeeS0ve5lfLqCU"
+PARENT_FOLDER_ID = "10bL1POPWVyCcD7O1-Dokklq6wD2kG39-"
+
 SCOPE = [
     "https://www.googleapis.com/auth/drive",
     "https://spreadsheets.google.com/feeds",
@@ -19,7 +21,8 @@ SCOPE = [
 ]
 
 # Load credentials from Streamlit secrets
-creds = google_credentials(SCOPE), scopes=SCOPE
+creds = service_account.Credentials.from_service_account_info(
+    dict(st.secrets["GOOGLE"]), scopes=SCOPE
 )
 
 def upload_to_drive_and_log(file, file_type, uploader_email, custom_name):

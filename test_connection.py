@@ -1,6 +1,5 @@
-from settings import SHEET_ID, google_credentials
 import gspread
-import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 # Define API scope
 scope = [
