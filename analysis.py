@@ -1,49 +1,79 @@
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import re
+
+def _extract_cat_label(text):
+    """Return 'A','B','C',... from 'A) Something', else None."""
+    if pd.isna(text):
+        return None
+    m = re.match(r"\s*([A-Za-z0-9])\)\s*", str(text))
+    return m.group(1).upper() if m else None
+
+def _strip_leading_label(s):
+    if pd.isna(s):
+        return None
+    return re.sub(r"^\s*[A-Za-z0-9]+\)\s*", "", str(s).strip())
+
+def _final_subcat(s):
+    """From 'Thing *** Specific Name' keep the last part as the subcategory."""
+    if pd.isna(s):
+        return None
+    parts = [p.strip() for p in str(s).split("***")]
+    out = parts[-1] if parts else str(s)
+    return re.sub(r"\s+", " ", out) or None
 
 def process_budget(file_path_or_bytes):
-    # Step 1: Read and clean
-    df = pd.read_excel(file_path_or_bytes, sheet_name=0, skiprows=5)
-    df.dropna(how="all", inplace=True)
-    df.dropna(axis=1, how="all", inplace=True)
-    df.reset_index(drop=True, inplace=True)
+    """
+    Parse the Budget workbook into a tidy frame with:
+      - CatLabel (A/B/C/...)
+      - Category (budget category header text)
+      - Sub-Category (cleaned, last *** chunk)
+      - Total (numeric, already USD)
+    """
+    raw = pd.read_excel(file_path_or_bytes, sheet_name=0, header=None)
+    df = raw.dropna(how="all")
+    df = df.dropna(axis=1, how="all").reset_index(drop=True)
 
-    # Step 2: Rename columns manually to match your known format
-    new_columns = ['Description'] + [str(i) for i in range(1, 13)] + ['Total']
-    df.columns = new_columns + list(df.columns[len(new_columns):])  # keep extras if any
+    # Heuristic: choose the rightmost column with enough numerics as Total
+    ncols = df.shape[1]
+    numeric_counts = {c: pd.to_numeric(df.iloc[:, c], errors="coerce").notna().sum() for c in range(1, ncols)}
+    candidates = [c for c, cnt in numeric_counts.items() if cnt >= 10]
+    total_col = max(candidates) if candidates else (ncols - 1)
 
-    # Step 3: Skip first 2 rows — those are still header/label clutter
-    df = df.iloc[2:].reset_index(drop=True)
+    def is_category_row(v):
+        return isinstance(v, str) and re.match(r"^\s*[A-Z]\)\s+", v)
 
-    # Step 4: Build structured format
-    structured = []
-    current_category = None
+    def is_subsection_row(v):
+        return isinstance(v, str) and re.match(r"^\s*[a-z0-9]\)\s+", v)
 
-    for _, row in df.iterrows():
-        desc = str(row["Description"]).strip()
-        if pd.isna(desc):
+    records = []
+    current_cat = None
+    current_label = None
+
+    for i in range(len(df)):
+        desc = df.iloc[i, 0]
+
+        if is_category_row(desc):
+            current_label = _extract_cat_label(desc)     # 'A','B',...
+            current_cat   = _strip_leading_label(desc)   # e.g., 'Email & Telephony'
             continue
-        if desc and desc[0].isupper() and ')' in desc:
-            current_category = desc.split(')', 1)[-1].strip()
-            structured.append({
-                "Category": current_category,
-                "Subcategory": None,
-                "Monthly": row[1:13].values,
-                "Total": row["Total"]
+
+        if is_subsection_row(desc):
+            # Skip internal sub-sections like "a) ..."
+            continue
+
+        # Treat as a sub-item if any numeric appears in 1..total_col
+        nums = pd.to_numeric(df.iloc[i, 1:total_col+1], errors="coerce")
+        if nums.notna().any() and isinstance(desc, str) and desc.strip():
+            sub = _final_subcat(_strip_leading_label(desc))
+            tot = pd.to_numeric(df.iloc[i, total_col], errors="coerce")
+            records.append({
+                "CatLabel": current_label,              # 'A','B','C',...
+                "Category": current_cat,                # full budget category name
+                "Sub-Category": sub,                    # cleaned subcategory (after ***)
+                "Total": float(tot) if pd.notna(tot) else np.nan  # USD already
             })
-        elif current_category:
-            structured.append({
-                "Category": current_category,
-                "Subcategory": desc,
-                "Monthly": row[1:13].values,
-                "Total": row["Total"]
-            })
 
-    df_structured = pd.DataFrame(structured)
-    df_structured["Monthly"] = df_structured["Monthly"].apply(lambda x: np.array(x, dtype=float))
-    df_structured["Total"] = pd.to_numeric(df_structured["Total"], errors="coerce").fillna(0)
-
-    return df_structured
-
-
+    out = pd.DataFrame(records).dropna(subset=["CatLabel","Category","Sub-Category"]).reset_index(drop=True)
+    out["Total"] = pd.to_numeric(out["Total"], errors="coerce")
+    return out
