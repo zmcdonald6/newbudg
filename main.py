@@ -9,6 +9,8 @@ import requests
 from io import BytesIO
 import re
 
+from uritemplate import expand
+
 from auth import get_user_credentials, log_activity
 from drive_utils import upload_to_drive_and_log
 from analysis import process_budget
@@ -516,6 +518,7 @@ elif st.session_state.authenticated:
 
                 # --- Parse Budget (already USD)
                 df_budget = process_budget(BytesIO(requests.get(budget_url).content))
+                df_budget = df_budget[~df_budget["Sub-Category"].str.strip().str.lower().eq("total")]
 
                 # --- Load Expense & Normalize
                 df_expense_raw = pd.read_excel(BytesIO(requests.get(expense_url).content))
@@ -597,7 +600,7 @@ elif st.session_state.authenticated:
                 # ===============================================================
                 # Filters (Budget Category & Vendor)
                 # ===============================================================
-                st.markdown("### 🔍 Filter Data")
+                st.markdown("Reports")
                 with st.expander("📂 Filter by Categories"):
                     all_cats = sorted(df_expense["Budget Category"].dropna().unique().tolist())
                     select_all_cat = st.checkbox("Select All Categories", value=True, key="all_categories")
@@ -697,5 +700,162 @@ elif st.session_state.authenticated:
                             "Amount Spent (USD)": "{:.2f}",
                             "Variance (USD)": "{:.2f}",
                         }),
+                        use_container_width=True
+                    )
+
+                # ===============================================================
+                # Full budget totals (overall summary)
+                # ===============================================================
+                full_view = final_view.copy()
+
+                # Add category totals
+                cat_totals = (
+                    full_view.groupby("Category", as_index=False)[
+                        ["Amount Budgeted", "Amount Spent (USD)", "Variance (USD)"]
+                    ].sum()
+                )
+                cat_totals["Sub-Category"] = ""  # blank subcategory for totals
+
+                # Mark totals for formatting
+                cat_totals["is_total"] = True
+                full_view["is_total"] = False
+
+                # Combine totals + subcategories
+                hierarchy_view = pd.concat([cat_totals, full_view], ignore_index=True)
+
+                # Sort so totals appear first within each category
+                hierarchy_view.sort_values(["Category", "is_total"], ascending=[True, False], inplace=True)
+
+                # Display with formatting
+                def fmt_budget(x):
+                    return "Out of Budget" if pd.isna(x) else f"{x:,.2f}"
+
+                # ===============================================================
+                # Full Budget View (Category + Subcategories, including OOB)
+                # ===============================================================
+
+                # 1. Start with all budgeted subcategories (baseline structure)
+                budget_full = (
+                    df_budget.rename(columns={
+                        "Category": "Category",
+                        "Sub-Category": "Sub-Category",
+                        "Total": "Amount Budgeted"
+                    })[["Category", "Sub-Category", "Amount Budgeted"]].copy()
+                )
+
+                # Replace NaN budget values with 0
+                budget_full["Amount Budgeted"] = pd.to_numeric(budget_full["Amount Budgeted"], errors="coerce").fillna(0)
+
+                # 2. Aggregate expenses by Category/Subcategory
+                expenses_agg = (
+                    filtered_df.groupby(["Budget Category", "Sub-Category"], dropna=False, as_index=False)["Amount (USD)"]
+                    .sum()
+                    .rename(columns={"Budget Category": "Category", "Amount (USD)": "Amount Spent (USD)"})
+                )
+
+                # 3. Merge budget + expenses
+                merged_full = budget_full.merge(
+                    expenses_agg,
+                    how="outer",
+                    on=["Category", "Sub-Category"]
+                )
+
+                # 4. Compute variance
+                merged_full["Amount Spent (USD)"] = merged_full["Amount Spent (USD)"].fillna(0)
+                merged_full["Variance (USD)"] = merged_full["Amount Budgeted"] - merged_full["Amount Spent (USD)"]
+
+                # 5. Identify Out-of-Budget (OOB) items
+                budget_keys = set(budget_full.set_index(["Category", "Sub-Category"]).index)
+                expense_keys = set(expenses_agg.set_index(["Category", "Sub-Category"]).index)
+
+                # Subcategory pairs that exist in expenses but not in budget
+                oob_keys = expense_keys - budget_keys
+
+                # OOB items DataFrame
+                if oob_keys:
+                    oob_items = expenses_agg.set_index(["Category", "Sub-Category"]).loc[list(oob_keys)].reset_index()
+                    oob_items["Category"] = "Out of Budget"        # force category override
+                    oob_items["Amount Budgeted"] = "OOB"
+                    oob_items["Variance (USD)"] = -oob_items["Amount Spent (USD)"]
+
+                    # Remove them from merged_full if they leaked in with old category
+                    merged_full = merged_full[~merged_full.set_index(["Category","Sub-Category"]).index.isin(oob_keys)]
+
+                    # Add OOB rows back
+                    merged_full = pd.concat([merged_full, oob_items], ignore_index=True)
+
+
+                # 6. Category totals
+                def total_budget(series):
+                    # If category contains any OOB entries, set total budget = 0
+                    if (series == "OOB").any():
+                        return 0
+                    return series.sum()
+
+                cat_totals = (
+                    merged_full.groupby("Category", as_index=False)
+                    .agg({
+                        "Amount Budgeted": total_budget,
+                        "Amount Spent (USD)": "sum",
+                        "Variance (USD)": "sum"
+                    })
+                )
+                cat_totals["Sub-Category"] = ""
+                cat_totals["is_total"] = True
+                merged_full["is_total"] = False
+
+                # 7. Combine totals + details
+                hierarchy_view = pd.concat([cat_totals, merged_full], ignore_index=True)
+
+                # Sort so totals come first, subcategories after, OOB last
+                hierarchy_view["sort_key"] = hierarchy_view.apply(
+                    lambda r: (1 if r["Category"] == "Out of Budget" else 0, 0 if r.get("is_total") else 1, str(r["Sub-Category"])),
+                    axis=1
+                )
+                hierarchy_view.sort_values(["sort_key"], inplace=True)
+                hierarchy_view.drop(columns=["sort_key"], inplace=True)
+
+                # 8. Formatting helper
+                def fmt_budget(val):
+                    if isinstance(val, str) and val == "OOB":
+                        return "OOB"
+                    try:
+                        return f"{val:,.2f}"
+                    except Exception:
+                        return val
+
+                # 9. Display in Streamlit
+                with st.expander("📘 Full Budget View (USD) — Category + Subcategories", expanded=False):
+                    df_display = hierarchy_view.copy()
+
+                    # ---- Sort categories in budget order, OOB last ----
+                    budget_order = df_budget["Category"].drop_duplicates().tolist()
+                    df_display["Category"] = pd.Categorical(
+                        df_display["Category"],
+                        categories=budget_order + ["Out of Budget"],
+                        ordered=True
+                    )
+                    df_display.sort_values(["Category", "Sub-Category"], inplace=True)
+
+                    # ---- Add arrow prefix to subcategories (not totals) ----
+                    df_display.loc[df_display["Sub-Category"].notna() & (df_display["Sub-Category"] != ""), "Sub-Category"] = (
+                        "→ " + df_display.loc[df_display["Sub-Category"].notna() & (df_display["Sub-Category"] != ""), "Sub-Category"].astype(str)
+                    )
+
+                    # ---- Reset index so no row numbers show ----
+                    df_display.reset_index(drop=True, inplace=True)
+
+                    # ---- Columns to show ----
+                    display_cols = ["Category", "Sub-Category", "Amount Budgeted", "Amount Spent (USD)", "Variance (USD)"]
+
+                    # ---- Style: bold category total rows (where Sub-Category is blank) ----
+                    st.dataframe(
+                        df_display[display_cols].style
+                            .apply(lambda row: ["font-weight: bold" if not row["Sub-Category"] or row["Sub-Category"] == "→ " else "" for _ in row], axis=1)
+                            .format({
+                                "Amount Budgeted": fmt_budget,
+                                "Amount Spent (USD)": "{:,.2f}",
+                                "Variance (USD)": "{:,.2f}",
+                            }),
                         use_container_width=True
                     )
