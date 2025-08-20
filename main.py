@@ -161,6 +161,7 @@ elif st.session_state.force_pw_change:
                     st.session_state.last_active = datetime.now()
 
                     st.success("Password updated successfully. Redirecting…")
+                    clear_sheet_cache()
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to update password: {e}")
@@ -419,6 +420,7 @@ elif st.session_state.authenticated:
                         if url:
                             st.success("✅ Uploaded and logged successfully.")
                             st.write(f"[View File]({url})")
+                            clear_sheet_cache()
                             st.rerun()
                         else:
                             st.error("Upload or logging failed.")
@@ -460,6 +462,7 @@ elif st.session_state.authenticated:
                                 else:
                                     files_ws.delete_rows(row_no)  # remove the log record
                                     st.success("File record removed.")
+                                    clear_sheet_cache()
                                     st.rerun()
                         except Exception as e:
                             st.error(f"Failed to delete file record: {e}")
@@ -484,6 +487,7 @@ elif st.session_state.authenticated:
                     if url:
                         st.success("✅ Uploaded and logged successfully.")
                         st.write(f"[View File]({url})")
+                        clear_sheet_cache()
 
     # =========================================================
     # Generate Report (collapsed, no auto-selection)
