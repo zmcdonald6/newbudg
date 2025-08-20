@@ -25,6 +25,23 @@ SCOPE = [
     "https://www.googleapis.com/auth/drive"
 ]
 
+# ========= Cached Google Sheets helpers =========
+@st.cache_resource
+def get_gs_client():
+    creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
+    return gspread.authorize(creds)
+
+@st.cache_data(ttl=60)  # cache read data for 60 seconds
+def ws_records(sheet_name: str):
+    client = get_gs_client()
+    ws = client.open_by_key(SHEET_ID).worksheet(sheet_name)
+    return ws.get_all_records()
+
+def clear_sheet_cache():
+    ws_records.clear()
+    get_user_credentials.clear()
+# ================================================
+
 # Initialize session
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -168,6 +185,8 @@ elif st.session_state.authenticated:
 
         #CRUD on Users
         with st.expander("User Management", expanded=False):
+            st.caption("Data cached for 60s to prevent API 429s.")
+            if st.button("🔄 Refresh Users", key="refresh_users"): clear_sheet_cache(); st.rerun()
             # --- Sheets setup (local to this expander) ---
             try:
                 creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
@@ -178,7 +197,7 @@ elif st.session_state.authenticated:
                 st.stop()
 
             # --- Load & show users ---
-            rows = users_ws.get_all_records()
+            rows = ws_records('Users')
             df_users = pd.DataFrame(rows) if rows else pd.DataFrame(
                 columns=["name","username","email","hashed_password","role","first_login"]
             )
@@ -296,6 +315,8 @@ elif st.session_state.authenticated:
                                 st.error(f"Failed to remove user: {e}")
         # To View Logins
         with st.expander("Login Activity", expanded=False):
+            st.caption("Data cached for 60s to prevent API 429s.")
+            if st.button("🔄 Refresh Logs", key="refresh_logs"): clear_sheet_cache(); st.rerun()
             # Sheets setup
             try:
                 creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
@@ -306,7 +327,7 @@ elif st.session_state.authenticated:
                 st.stop()
 
             # Load logs (view-only)
-            rows = logs_ws.get_all_records()  # expected columns: email, activity_type, timestamp, ip_address
+            rows = ws_records('LoginLogs')  # expected columns: email, activity_type, timestamp, ip_address
             df_logs = pd.DataFrame(rows) if rows else pd.DataFrame(
                 columns=["email", "activity_type", "timestamp", "ip_address"]
             )
@@ -360,6 +381,8 @@ elif st.session_state.authenticated:
 
         #CRUD on Files
         with st.expander("File Management", expanded=False):
+            st.caption("Data cached for 60s to prevent API 429s.")
+            if st.button("🔄 Refresh Files", key="refresh_files"): clear_sheet_cache(); st.rerun()
              # Sheets setup
             try:
                 creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
@@ -370,7 +393,7 @@ elif st.session_state.authenticated:
                 st.stop()
 
             # --- View files ---
-            rows = files_ws.get_all_records()  # expects headers: file_name, file_type, uploader_email, timestamp, file_url
+            rows = ws_records('UploadedFiles')  # expects headers: file_name, file_type, uploader_email, timestamp, file_url
             df_files = pd.DataFrame(rows) if rows else pd.DataFrame(
                 columns=["file_name", "file_type", "uploader_email", "timestamp", "file_url"]
             )
@@ -466,10 +489,12 @@ elif st.session_state.authenticated:
     # Generate Report (collapsed, no auto-selection)
     # =========================================================
     with st.expander("🧾 Generate Report", expanded=False):
+        st.caption("Data cached for 60s to prevent API 429s.")
+        if st.button("🔄 Refresh Reports", key="refresh_reports"): clear_sheet_cache(); st.rerun()
         creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
         client = gspread.authorize(creds)
         upload_log = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
-        records = upload_log.get_all_records()
+        records = ws_records('UploadedFiles')
 
         if not records:
             st.info("📭 No uploaded files yet. Please upload at least one budget and one expense file.")
