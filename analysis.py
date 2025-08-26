@@ -30,7 +30,7 @@ def process_budget(file_path_or_bytes):
       - Sub-Category (cleaned, last *** chunk)
       - Total (numeric, already USD)
     """
-    raw = pd.read_excel(file_path_or_bytes, sheet_name=0, header=None)
+    raw = pd.read_excel(file_path_or_bytes, sheet_name=0, header=None, engine="openpyxl")
     df = raw.dropna(how="all")
     df = df.dropna(axis=1, how="all").reset_index(drop=True)
 
@@ -77,3 +77,4 @@ def process_budget(file_path_or_bytes):
     out = pd.DataFrame(records).dropna(subset=["CatLabel","Category","Sub-Category"]).reset_index(drop=True)
     out["Total"] = pd.to_numeric(out["Total"], errors="coerce")
     return out
+
