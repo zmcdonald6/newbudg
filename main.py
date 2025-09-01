@@ -29,7 +29,7 @@ SCOPE = [
 # --- Cached Google client ---
 @st.cache_resource
 def get_gclient():
-    creds = service_account.Credentials.from_service_account_file("service_account.json", scopes=SCOPE)
+    creds = service_account.Credentials.from_service_account_info(st.secrets["GOOGLE"], scopes=SCOPE)
     return gspread.authorize(creds)
 
 client = get_gclient()
@@ -916,5 +916,6 @@ elif st.session_state.authenticated:
                             }),
                         use_container_width=True
                     )
+
 
 
