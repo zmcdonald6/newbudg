@@ -13,7 +13,7 @@ from uritemplate import expand
 
 from auth import get_user_credentials, log_activity
 from drive_utils import upload_to_drive_and_log
-from analysis import process_budget
+from analysis import process_budget, process_expenses
 from fxhelper import get_usd_rates, convert_row_amount_to_usd
 
 # Constants
@@ -24,23 +24,6 @@ SCOPE = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
 ]
-
-# ========= Cached Google Sheets helpers =========
-@st.cache_resource
-def get_gs_client():
-    creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
-    return gspread.authorize(creds)
-
-@st.cache_data(ttl=60)  # cache read data for 60 seconds
-def ws_records(sheet_name: str):
-    client = get_gs_client()
-    ws = client.open_by_key(SHEET_ID).worksheet(sheet_name)
-    return ws.get_all_records()
-
-def clear_sheet_cache():
-    ws_records.clear()
-    get_user_credentials.clear()
-# ================================================
 
 # Initialize session
 if "authenticated" not in st.session_state:
@@ -161,7 +144,6 @@ elif st.session_state.force_pw_change:
                     st.session_state.last_active = datetime.now()
 
                     st.success("Password updated successfully. Redirecting…")
-                    clear_sheet_cache()
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to update password: {e}")
@@ -169,6 +151,22 @@ elif st.session_state.force_pw_change:
 # Main dashboard
 elif st.session_state.authenticated:
     st.title("MSGIT Budget Reporter")
+    # === Templates download (Budget & Expenses) ===
+    # with st.container():
+    #    st.markdown("### Download budget and expense templates below")
+    #    try:
+    #        from pathlib import Path as _Path
+    #        _tpl_dir = _Path(__file__).parent / "templates"
+    #        _bud_bytes = (_tpl_dir / "Budget_Template_BTA.xlsx").read_bytes()
+    #        _exp_bytes = (_tpl_dir / "Expense_Template_BTA.xlsx").read_bytes()
+    #        c1, c2 = st.columns(2)
+    #        with c1:
+    #            st.download_button("Download Budget Template", data=_bud_bytes, file_name="Budget_Template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_bud_tpl")
+    #        with c2:
+    #            st.download_button("Download Expenses Template", data=_exp_bytes, file_name="Expenses_Template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_exp_tpl")
+    #    except Exception as _e:
+    #        st.info("Templates will appear here when available.")
+
     log_activity(st.session_state.email, "Login")
 
     if st.button("🚪 Logout"):
@@ -186,8 +184,6 @@ elif st.session_state.authenticated:
 
         #CRUD on Users
         with st.expander("User Management", expanded=False):
-            st.caption("Data cached for 60s to prevent API 429s.")
-            if st.button("🔄 Refresh Users", key="refresh_users"): clear_sheet_cache(); st.rerun()
             # --- Sheets setup (local to this expander) ---
             try:
                 creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
@@ -198,7 +194,7 @@ elif st.session_state.authenticated:
                 st.stop()
 
             # --- Load & show users ---
-            rows = ws_records('Users')
+            rows = users_ws.get_all_records()
             df_users = pd.DataFrame(rows) if rows else pd.DataFrame(
                 columns=["name","username","email","hashed_password","role","first_login"]
             )
@@ -316,8 +312,6 @@ elif st.session_state.authenticated:
                                 st.error(f"Failed to remove user: {e}")
         # To View Logins
         with st.expander("Login Activity", expanded=False):
-            st.caption("Data cached for 60s to prevent API 429s.")
-            if st.button("🔄 Refresh Logs", key="refresh_logs"): clear_sheet_cache(); st.rerun()
             # Sheets setup
             try:
                 creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
@@ -328,7 +322,7 @@ elif st.session_state.authenticated:
                 st.stop()
 
             # Load logs (view-only)
-            rows = ws_records('LoginLogs')  # expected columns: email, activity_type, timestamp, ip_address
+            rows = logs_ws.get_all_records()  # expected columns: email, activity_type, timestamp, ip_address
             df_logs = pd.DataFrame(rows) if rows else pd.DataFrame(
                 columns=["email", "activity_type", "timestamp", "ip_address"]
             )
@@ -382,8 +376,6 @@ elif st.session_state.authenticated:
 
         #CRUD on Files
         with st.expander("File Management", expanded=False):
-            st.caption("Data cached for 60s to prevent API 429s.")
-            if st.button("🔄 Refresh Files", key="refresh_files"): clear_sheet_cache(); st.rerun()
              # Sheets setup
             try:
                 creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
@@ -394,7 +386,7 @@ elif st.session_state.authenticated:
                 st.stop()
 
             # --- View files ---
-            rows = ws_records('UploadedFiles')  # expects headers: file_name, file_type, uploader_email, timestamp, file_url
+            rows = files_ws.get_all_records()  # expects headers: file_name, file_type, uploader_email, timestamp, file_url
             df_files = pd.DataFrame(rows) if rows else pd.DataFrame(
                 columns=["file_name", "file_type", "uploader_email", "timestamp", "file_url"]
             )
@@ -420,7 +412,6 @@ elif st.session_state.authenticated:
                         if url:
                             st.success("✅ Uploaded and logged successfully.")
                             st.write(f"[View File]({url})")
-                            clear_sheet_cache()
                             st.rerun()
                         else:
                             st.error("Upload or logging failed.")
@@ -462,7 +453,6 @@ elif st.session_state.authenticated:
                                 else:
                                     files_ws.delete_rows(row_no)  # remove the log record
                                     st.success("File record removed.")
-                                    clear_sheet_cache()
                                     st.rerun()
                         except Exception as e:
                             st.error(f"Failed to delete file record: {e}")
@@ -472,6 +462,21 @@ elif st.session_state.authenticated:
     # =========================================================
     # Upload interface (collapsed)
     # =========================================================
+    with st.expander("Download Reporter Templates", expanded=False):
+        st.markdown("### Download budget and expense templates below")
+        try:
+            from pathlib import Path as _Path
+            _tpl_dir = _Path(__file__).parent / "templates"
+            _bud_bytes = (_tpl_dir / "Budget_Template_BTA.xlsx").read_bytes()
+            _exp_bytes = (_tpl_dir / "Expense_Template_BTA.xlsx").read_bytes()
+            c1, c2 = st.columns(2)
+            with c1:
+                st.download_button("Download Budget Template", data=_bud_bytes, file_name="Budget_Template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_bud_tpl")
+            with c2:
+                st.download_button("Download Expenses Template", data=_exp_bytes, file_name="Expenses_Template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_exp_tpl")
+        except Exception as _e:
+            st.info("Templates will appear here when available.")
+
     with st.expander("⬆Upload File (Budget or Expense)", expanded=False):
         with st.form("upload_form"):
             uploaded_file = st.file_uploader("Choose a file", type=["xlsx"])
@@ -487,18 +492,15 @@ elif st.session_state.authenticated:
                     if url:
                         st.success("✅ Uploaded and logged successfully.")
                         st.write(f"[View File]({url})")
-                        clear_sheet_cache()
 
     # =========================================================
     # Generate Report (collapsed, no auto-selection)
     # =========================================================
     with st.expander("🧾 Generate Report", expanded=False):
-        st.caption("Data cached for 60s to prevent API 429s.")
-        if st.button("🔄 Refresh Reports", key="refresh_reports"): clear_sheet_cache(); st.rerun()
         creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
         client = gspread.authorize(creds)
         upload_log = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
-        records = ws_records('UploadedFiles')
+        records = upload_log.get_all_records()
 
         if not records:
             st.info("📭 No uploaded files yet. Please upload at least one budget and one expense file.")
@@ -549,26 +551,11 @@ elif st.session_state.authenticated:
                 df_budget = process_budget(BytesIO(requests.get(budget_url).content))
                 df_budget = df_budget[~df_budget["Sub-Category"].str.strip().str.lower().eq("total")]
 
-                # --- Load Expense & Normalize
-                df_expense_raw = pd.read_excel(BytesIO(requests.get(expense_url).content))
-
-                # Normalize column names (include Classification)
-                col_map = {
-                    "date": "Invoice Date", "invoice date": "Invoice Date",
-                    "vendorname": "Vendor", "vendor": "Vendor",
-                    "subcategory": "Sub-Category", "sub-category": "Sub-Category",
-                    "category": "Category",
-                    "amount": "Amount", "cost": "Amount", "totalcost": "Amount",
-                    "currency": "Currency",
-                    "classification": "Classification"
-                }
-                df_expense = df_expense_raw.rename(columns=lambda x: col_map.get(str(x).strip().lower(), str(x).strip())).copy()
-
-                # Validate required columns (Classification required for CAPEX/OPEX)
-                required = ["Category", "Sub-Category", "Invoice Date", "Vendor", "Amount", "Currency", "Classification"]
-                missing = [c for c in required if c not in df_expense.columns]
-                if missing:
-                    st.error(f"❌ Expense sheet is missing required columns: {', '.join(missing)}")
+                from analysis import process_budget, process_expenses
+                try:
+                    df_expense = process_expenses(BytesIO(requests.get(expense_url).content))
+                except Exception as e:
+                    st.error(f"❌ Could not process Expenses file: {e}")
                     st.stop()
 
                 # Normalize Classification and filter by selected budget type (OPEX/CAPEX)
@@ -578,29 +565,9 @@ elif st.session_state.authenticated:
                     st.warning(f"No {selected_budget_type} expenses found for the selected files.")
                     st.stop()
 
-                # Extract label + clean subcategory (label-driven match)
-                def extract_label(text):
-                    if pd.isna(text): return None
-                    m2 = re.match(r"\s*([A-Za-z0-9])\)\s*", str(text))
-                    return m2.group(1).upper() if m2 else None
-
-                def clean_subcategory(text):
-                    if pd.isna(text): return text
-                    t = re.sub(r"^\s*[A-Za-z0-9]+\)\s*", "", str(text).strip())   # remove 'A) '
-                    parts = [p.strip() for p in t.split("***")]                    # keep last *** chunk
-                    return parts[-1] if parts else t
-
-                df_expense["CatLabel"] = df_expense["Sub-Category"].apply(extract_label)
-                df_expense["Sub-Category"] = df_expense["Sub-Category"].apply(clean_subcategory)
-
-                # Map CatLabel -> Budget Category
-                label_map = (
-                    df_budget[["CatLabel","Category"]]
-                    .drop_duplicates()
-                    .set_index("CatLabel")["Category"]
-                    .to_dict()
-                )
-                df_expense["Budget Category"] = df_expense["CatLabel"].map(label_map)
+                # ✅ Using CatLabel and Sub-Category directly from process_expenses
+                df_expense = df_expense.copy()
+                df_expense["Budget Category"] = df_expense["Category"]
 
                 # ---- FX conversion (expenses only, to USD) ----
                 try:
@@ -804,8 +771,11 @@ elif st.session_state.authenticated:
                 if oob_keys:
                     oob_items = expenses_agg.set_index(["Category", "Sub-Category"]).loc[list(oob_keys)].reset_index()
                     oob_items["Category"] = "Out of Budget"        # force category override
-                    oob_items["Amount Budgeted"] = "OOB"
+                    oob_items["Amount Budgeted"] = 0.0
                     oob_items["Variance (USD)"] = -oob_items["Amount Spent (USD)"]
+                    oob_items["is_oob"] = True              # ✅ NEW FLAG
+                    merged_full = merged_full[~merged_full.set_index(["Category","Sub-Category"]).index.isin(oob_keys)]
+                    merged_full = pd.concat([merged_full, oob_items], ignore_index=True)
 
                     # Remove them from merged_full if they leaked in with old category
                     merged_full = merged_full[~merged_full.set_index(["Category","Sub-Category"]).index.isin(oob_keys)]
@@ -846,7 +816,7 @@ elif st.session_state.authenticated:
 
                 # 8. Formatting helper
                 def fmt_budget(val):
-                    if isinstance(val, str) and val == "OOB":
+                    if isinstance(val, (int, float)) and val == 0:
                         return "OOB"
                     try:
                         return f"{val:,.2f}"
@@ -882,9 +852,11 @@ elif st.session_state.authenticated:
                         df_display[display_cols].style
                             .apply(lambda row: ["font-weight: bold" if not row["Sub-Category"] or row["Sub-Category"] == "→ " else "" for _ in row], axis=1)
                             .format({
-                                "Amount Budgeted": fmt_budget,
+                                "Amount Budgeted": lambda v, is_oob=None: "OOB" if is_oob else f"{v:,.2f}",
                                 "Amount Spent (USD)": "{:,.2f}",
                                 "Variance (USD)": "{:,.2f}",
                             }),
                         use_container_width=True
                     )
+
+
