@@ -25,6 +25,42 @@ SCOPE = [
     "https://www.googleapis.com/auth/drive"
 ]
 
+
+# --- Cached Google client ---
+@st.cache_resource
+def get_gclient():
+    creds = service_account.Credentials.from_service_account_file("service_account.json", scopes=SCOPE)
+    return gspread.authorize(creds)
+
+client = get_gclient()
+
+# --- Cached data loaders ---
+@st.cache_data(ttl=60)
+def load_users():
+    ws = client.open_by_key(SHEET_ID).worksheet("Users")
+    rows = ws.get_all_records()
+    return pd.DataFrame(rows)
+
+@st.cache_data(ttl=60)
+def load_logs():
+    ws = client.open_by_key(SHEET_ID).worksheet("LoginLogs")
+    rows = ws.get_all_records()
+    return pd.DataFrame(rows)
+
+@st.cache_data(ttl=60)
+def load_files():
+    ws = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
+    rows = ws.get_all_records()
+    return pd.DataFrame(rows)
+
+@st.cache_data(ttl=1800)
+def cached_fx_rates():
+    return get_usd_rates()
+
+@st.cache_data(ttl=600)
+def cached_file_download(url: str):
+    return requests.get(url).content
+
 # Initialize session
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -195,10 +231,17 @@ elif st.session_state.authenticated:
 
             # --- Load & show users ---
             rows = users_ws.get_all_records()
+            if st.button('🔄 Refresh Users'): load_users.clear()
+            df_users = load_users()
+            if df_users.empty:
+                df_users = pd.DataFrame(columns=["name","username","email","hashed_password","role","first_login"])
+            st.dataframe(df_users, use_container_width=True)
+
+            # rows is kept for backend ops below
             df_users = pd.DataFrame(rows) if rows else pd.DataFrame(
                 columns=["name","username","email","hashed_password","role","first_login"]
             )
-            st.dataframe(df_users, use_container_width=True)
+            # (removed duplicate df_users display), use_container_width=True)
 
             st.divider()
             st.subheader("Add New User")
@@ -323,6 +366,13 @@ elif st.session_state.authenticated:
 
             # Load logs (view-only)
             rows = logs_ws.get_all_records()  # expected columns: email, activity_type, timestamp, ip_address
+            if st.button('🔄 Refresh Logs'): load_logs.clear()
+            df_logs = load_logs()
+            if df_logs.empty:
+                df_logs = pd.DataFrame(columns=["email", "activity_type", "timestamp", "ip_address"])
+            st.dataframe(df_logs, use_container_width=True)
+
+            # rows is kept for filters below
             df_logs = pd.DataFrame(rows) if rows else pd.DataFrame(
                 columns=["email", "activity_type", "timestamp", "ip_address"]
             )
@@ -330,7 +380,8 @@ elif st.session_state.authenticated:
             # Sort newest first if timestamp exists
             # --- Filters (Email + Date Range) ---
             if df_logs.empty:
-                st.dataframe(df_logs, use_container_width=True)
+                # (removed duplicate df_logs display), use_container_width=True)
+                df_logs = pd.DataFrame(columns=["email", "activity_type", "timestamp", "ip_address"])
             else:
                 # Ensure timestamp is datetime (already done above, but guard anyway)
                 if "timestamp" in df_logs.columns and not pd.api.types.is_datetime64_any_dtype(df_logs["timestamp"]):
@@ -387,10 +438,17 @@ elif st.session_state.authenticated:
 
             # --- View files ---
             rows = files_ws.get_all_records()  # expects headers: file_name, file_type, uploader_email, timestamp, file_url
+            if st.button('🔄 Refresh Files'): load_files.clear()
+            df_files = load_files()
+            if df_files.empty:
+                df_files = pd.DataFrame(columns=["file_name", "file_type", "uploader_email", "timestamp", "file_url"])
+            st.dataframe(df_files, use_container_width=True)
+
+            # rows is kept for delete logic below
             df_files = pd.DataFrame(rows) if rows else pd.DataFrame(
                 columns=["file_name", "file_type", "uploader_email", "timestamp", "file_url"]
             )
-            st.dataframe(df_files, use_container_width=True)
+            # (removed duplicate df_files display), use_container_width=True)
 
             st.divider()
 
@@ -646,7 +704,7 @@ elif st.session_state.authenticated:
                 # Variance and rounding
                 final_view["Variance (USD)"] = final_view["Amount Budgeted"].fillna(0) - final_view["Amount Spent (USD)"].fillna(0)
                 for col in ["Amount Budgeted", "Amount Spent (USD)", "Variance (USD)"]:
-                    final_view[col] = final_view[col].astype(float).round(2)
+                    final_view[col] = (final_view[col].astype(float).round(2)).fillna(0)
 
                 final_view = final_view[["Category", "Sub-Category", "Amount Budgeted", "Amount Spent (USD)", "Variance (USD)"]]
                 final_view.sort_values(["Category", "Sub-Category"], inplace=True)
