@@ -1,80 +1,118 @@
 import pandas as pd
-import numpy as np
 import re
+from typing import Union, IO
 
-def _extract_cat_label(text):
-    """Return 'A','B','C',... from 'A) Something', else None."""
-    if pd.isna(text):
+# Months for budget template
+MONTHS = [
+    "January","February","March","April","May","June",
+    "July","August","September","October","November","December"
+]
+
+def _clean_text(series: pd.Series) -> pd.Series:
+    """Strip and collapse whitespace in a Series of strings."""
+    return (
+        series.astype(str)
+        .str.strip()
+        .str.replace(r"\s+", " ", regex=True)
+        .replace("nan", pd.NA)
+    )
+
+def _extract_label(cat_str: str) -> str:
+    """Extract leading label like 'A)', 'B)' → 'A','B'."""
+    if pd.isna(cat_str):
         return None
-    m = re.match(r"\s*([A-Za-z0-9])\)\s*", str(text))
+    m = re.match(r"\s*([A-Za-z0-9])\)\s*", str(cat_str))
     return m.group(1).upper() if m else None
 
-def _strip_leading_label(s):
-    if pd.isna(s):
-        return None
-    return re.sub(r"^\s*[A-Za-z0-9]+\)\s*", "", str(s).strip())
-
-def _final_subcat(s):
-    """From 'Thing *** Specific Name' keep the last part as the subcategory."""
-    if pd.isna(s):
-        return None
-    parts = [p.strip() for p in str(s).split("***")]
-    out = parts[-1] if parts else str(s)
-    return re.sub(r"\s+", " ", out) or None
-
-def process_budget(file_path_or_bytes):
+# ------------------- BUDGET -------------------
+def process_budget(file_like: Union[str, IO[bytes]]) -> pd.DataFrame:
     """
-    Parse the Budget workbook into a tidy frame with:
-      - CatLabel (A/B/C/...)
-      - Category (budget category header text)
-      - Sub-Category (cleaned, last *** chunk)
-      - Total (numeric, already USD)
+    Reads the official Budget template:
+    Category | Subcategory | Jan..Dec | Notes
+    Returns: CatLabel, Category, Sub-Category, Total
     """
-    raw = pd.read_excel(file_path_or_bytes, sheet_name=0, header=None, engine="openpyxl")
-    df = raw.dropna(how="all")
-    df = df.dropna(axis=1, how="all").reset_index(drop=True)
+    try:
+        df = pd.read_excel(file_like, sheet_name="Budget")
+    except Exception:
+        df = pd.read_excel(file_like, sheet_name=0)
 
-    # Heuristic: choose the rightmost column with enough numerics as Total
-    ncols = df.shape[1]
-    numeric_counts = {c: pd.to_numeric(df.iloc[:, c], errors="coerce").notna().sum() for c in range(1, ncols)}
-    candidates = [c for c, cnt in numeric_counts.items() if cnt >= 10]
-    total_col = max(candidates) if candidates else (ncols - 1)
+    df.columns = [str(c).strip() for c in df.columns]
 
-    def is_category_row(v):
-        return isinstance(v, str) and re.match(r"^\s*[A-Z]\)\s+", v)
+    required = ["Category","Subcategory"] + MONTHS + ["Notes"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Budget sheet missing required columns: {', '.join(missing)}")
 
-    def is_subsection_row(v):
-        return isinstance(v, str) and re.match(r"^\s*[a-z0-9]\)\s+", v)
+    for m in MONTHS:
+        df[m] = pd.to_numeric(df[m], errors="coerce").fillna(0.0)
 
-    records = []
-    current_cat = None
-    current_label = None
+    df["Total"] = df[MONTHS].sum(axis=1)
 
-    for i in range(len(df)):
-        desc = df.iloc[i, 0]
+    mask = df["Category"].astype(str).str.strip().ne("") & df["Subcategory"].astype(str).str.strip().ne("")
+    out = df.loc[mask, ["Category","Subcategory","Total"]].copy()
 
-        if is_category_row(desc):
-            current_label = _extract_cat_label(desc)     # 'A','B',...
-            current_cat   = _strip_leading_label(desc)   # e.g., 'Email & Telephony'
-            continue
+    # Extract CatLabel directly from Category prefix
+    out["CatLabel"] = out["Category"].apply(_extract_label)
 
-        if is_subsection_row(desc):
-            # Skip internal sub-sections like "a) ..."
-            continue
-
-        # Treat as a sub-item if any numeric appears in 1..total_col
-        nums = pd.to_numeric(df.iloc[i, 1:total_col+1], errors="coerce")
-        if nums.notna().any() and isinstance(desc, str) and desc.strip():
-            sub = _final_subcat(_strip_leading_label(desc))
-            tot = pd.to_numeric(df.iloc[i, total_col], errors="coerce")
-            records.append({
-                "CatLabel": current_label,              # 'A','B','C',...
-                "Category": current_cat,                # full budget category name
-                "Sub-Category": sub,                    # cleaned subcategory (after ***)
-                "Total": float(tot) if pd.notna(tot) else np.nan  # USD already
-            })
-
-    out = pd.DataFrame(records).dropna(subset=["CatLabel","Category","Sub-Category"]).reset_index(drop=True)
+    out = out.rename(columns={"Subcategory":"Sub-Category"})
     out["Total"] = pd.to_numeric(out["Total"], errors="coerce")
-    return out
+
+    return out[["CatLabel","Category","Sub-Category","Total"]]
+
+# ------------------- EXPENSES -------------------
+def process_expenses(file_like: Union[str, IO[bytes]]) -> pd.DataFrame:
+    """
+    Reads the official Expense template:
+    Date | Category | Subcategory (compound "Category *** Subcategory")
+    | Vendor | Amount | Currency | Classification | Notes
+
+    Splits Subcategory into Category + Sub-Category,
+    extracts CatLabel, forward-fills blanks,
+    tags N/A/blank categories as "Out of Budget".
+    """
+    try:
+        df = pd.read_excel(file_like, sheet_name="Expenses")
+    except Exception:
+        df = pd.read_excel(file_like, sheet_name=0)
+
+    df.columns = [str(c).strip() for c in df.columns]
+
+    required = ["Date","Category","Subcategory","Vendor","Amount","Currency","Classification","Notes"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Expenses sheet missing required columns: {', '.join(missing)}")
+
+    # Parse Amount
+    df["Amount"] = (
+        df["Amount"]
+        .astype(str)
+        .str.replace(r"[^\d\.\-]", "", regex=True)
+        .replace("", "0")
+    )
+    df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0.0)
+
+    # Parse Date
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+
+    # Split "Category *** Sub-Category"
+    split_cat = df["Subcategory"].astype(str).str.split("***", n=1, expand=True, regex=False)
+    if split_cat.shape[1] == 2:
+        df["Category"]     = _clean_text(split_cat[0])
+        df["Sub-Category"] = _clean_text(split_cat[1])
+    else:
+        df["Sub-Category"] = _clean_text(df["Subcategory"])
+
+    # Forward-fill continuation rows
+    df[["Category","Sub-Category"]] = df[["Category","Sub-Category"]].ffill()
+
+    # Tag N/A/blank categories
+    df.loc[df["Category"].isna() | df["Category"].str.upper().eq("N/A"), "Category"] = "Out of Budget"
+
+    # Extract CatLabel
+    df["CatLabel"] = df["Category"].apply(_extract_label)
+
+    # Clean classification
+    df["Classification"] = _clean_text(df["Classification"]).str.upper()
+
+    return df[["Date","CatLabel","Category","Sub-Category","Vendor","Amount","Currency","Classification","Notes"]]
 
