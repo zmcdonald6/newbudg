@@ -115,4 +115,3 @@ def process_expenses(file_like: Union[str, IO[bytes]]) -> pd.DataFrame:
     df["Classification"] = _clean_text(df["Classification"]).str.upper()
 
     return df[["Date","CatLabel","Category","Sub-Category","Vendor","Amount","Currency","Classification","Notes"]]
-
