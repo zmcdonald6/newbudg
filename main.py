@@ -15,6 +15,8 @@ from auth import get_user_credentials, log_activity
 from drive_utils import upload_to_drive_and_log
 from analysis import process_budget, process_expenses
 from fxhelper import get_usd_rates, convert_row_amount_to_usd
+from google_safe import safe_get_records, clear_cache, client, SHEET_ID
+from gspread.exceptions import APIError
 
 # Constants
 
@@ -213,38 +215,39 @@ elif st.session_state.authenticated:
 
     st.success(f"✅ Logged in as {st.session_state.name}")
     st.caption(f"Role: {st.session_state.user_record.get('role','user')}")
-    # --- Admin panel skeleton (structure only) ---
+
+
+    # --- Admin panel ---
     _is_admin = str(st.session_state.user_record.get("role", "user")).strip().lower() == "admin"
     if _is_admin:
         st.subheader("Admin Panel")
 
+        #Global refresh for cached sheets
+        if st.button("♻️ Refresh All Google Sheet Data"):
+                    clear_cache()
+                    st.success("Cache cleared.")
+                    st.rerun()
+
         #CRUD on Users
         with st.expander("User Management", expanded=False):
-            # --- Sheets setup (local to this expander) ---
-            try:
-                creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
-                client = gspread.authorize(creds)
-                users_ws = client.open_by_key(SHEET_ID).worksheet("Users")
-            except Exception as e:
-                st.error(f"Couldn't open Users sheet: {e}")
-                st.stop()
+            # --- Load cached sheet data (API-safe) ---
+            df_users = safe_get_records("Users")
 
-            # --- Load & show users ---
-            rows = users_ws.get_all_records()
-            if st.button('🔄 Refresh Users'): load_users.clear()
-            df_users = load_users()
+            # Handle refresh manually (clear cache + rerun)
+            if st.button("🔄 Refresh Users"):
+                clear_cache()
+                st.rerun()
+
+            # --- Display users ---
             if df_users.empty:
-                df_users = pd.DataFrame(columns=["name","username","email","hashed_password","role","first_login"])
-            st.dataframe(df_users, use_container_width=True)
-
-            # rows is kept for backend ops below
-            df_users = pd.DataFrame(rows) if rows else pd.DataFrame(
-                columns=["name","username","email","hashed_password","role","first_login"]
-            )
-            # (removed duplicate df_users display), use_container_width=True)
+                st.info("No users found.")
+            else:
+                st.dataframe(df_users, use_container_width=True)
 
             st.divider()
             st.subheader("Add New User")
+
+            # --- Add new user form ---
             with st.form("admin_add_user_form"):
                 new_name = st.text_input("Name")
                 new_username = st.text_input("Username")
@@ -256,164 +259,154 @@ elif st.session_state.authenticated:
                 if add_submit:
                     if not new_email or not new_password_plain:
                         st.error("Email and password are required.")
-                    elif any(str(r.get("email","")).strip().lower() == new_email.strip().lower() for r in rows):
+                    elif not df_users.empty and new_email.lower() in df_users["email"].astype(str).str.lower().values:
                         st.error("A user with that email already exists.")
                     else:
                         try:
                             hashed = bcrypt.hashpw(new_password_plain.encode(), bcrypt.gensalt())
                             encoded = base64.b64encode(hashed).decode()
-                            # Force password change on first login by default
-                            users_ws.append_row([
-                                new_name, new_username, new_email, encoded, new_role, "TRUE"
-                            ])
-                            st.success("User added. They will be required to change password on first login.")
+                            ws = client.open_by_key(SHEET_ID).worksheet("Users")
+                            ws.append_row([new_name, new_username, new_email, encoded, new_role, "TRUE"])
                             get_user_credentials.clear()
+                            clear_cache()
+                            st.success("✅ User added — they’ll be required to change password on first login.")
                             st.rerun()
+                        except APIError:
+                            st.error("Google API temporarily unavailable. Please try again later.")
                         except Exception as e:
                             st.error(f"Failed to add user: {e}")
 
+            # ============================================================
+            # RESET PASSWORD / REMOVE USER
+            # ============================================================
             st.divider()
             st.subheader("Reset Password / Remove User")
 
-            emails = [r.get("email","") for r in rows]
-            if not emails:
-                st.info("No users found.")
+            if df_users.empty:
+                st.info("No users available.")
             else:
-                sel_email = st.selectbox("Select user by email", emails)
-
-                # helper: exact-match row by email (no substring false-positives)
-                def _find_row_by_email(ws, email: str) -> int | None:
-                    header = ws.row_values(1)
-                    if "email" not in header:
-                        return None
-                    email_col = header.index("email") + 1
-                    col_vals = ws.col_values(email_col)
-                    for i, v in enumerate(col_vals, start=1):
-                        if str(v).strip().lower() == email.strip().lower():
-                            return i
-                    return None
+                sel_email = st.selectbox("Select user by email", df_users["email"].dropna().tolist())
 
                 with st.form("admin_reset_remove_form"):
                     new_pw_plain = st.text_input("New Password", type="password")
                     col1, col2 = st.columns(2)
                     do_reset = col1.form_submit_button("🔑 Reset Password")
-                    confirm = col2.checkbox("Yes, delete this user")
+                    confirm_delete = col2.checkbox("Yes, delete this user")
                     do_delete = col2.form_submit_button("🗑️ Remove User")
 
+                    # --- Reset password ---
                     if do_reset:
                         if not new_pw_plain:
                             st.error("Enter a new password.")
                         else:
                             try:
-                                row_no = _find_row_by_email(users_ws, sel_email)
-                                if not row_no:
+                                ws = client.open_by_key(SHEET_ID).worksheet("Users")
+
+                                # Find row index (row 1 is header)
+                                email_col = ws.col_values(ws.row_values(1).index("email") + 1)
+                                row_no = next((i for i, v in enumerate(email_col, start=1)
+                                            if v.strip().lower() == sel_email.strip().lower()), None)
+                                if not row_no or row_no == 1:
                                     st.error("Couldn't locate user row.")
                                 else:
-                                    header = users_ws.row_values(1)
-                                    row_vals = users_ws.row_values(row_no)
-                                    # Pad to header length
+                                    header = ws.row_values(1)
+                                    row_vals = ws.row_values(row_no)
                                     while len(row_vals) < len(header):
                                         row_vals.append("")
-                                    # Map header -> index
-                                    h2i = {h: i for i, h in enumerate(header)}
 
-                                    # Set new password + force first_login to TRUE
+                                    # Update hashed password + force first_login = TRUE
                                     new_h = bcrypt.hashpw(new_pw_plain.encode(), bcrypt.gensalt())
-                                    row_vals[h2i["hashed_password"]] = base64.b64encode(new_h).decode()
-                                    row_vals[h2i["first_login"]] = "TRUE"
+                                    row_vals[header.index("hashed_password")] = base64.b64encode(new_h).decode()
+                                    row_vals[header.index("first_login")] = "TRUE"
 
-                                    # Compute range like A{row}:<end>{row}
-                                    def _col_letters(n: int) -> str:
-                                        s = ""
-                                        while n > 0:
-                                            n, r = divmod(n - 1, 26)
-                                            s = chr(65 + r) + s
-                                        return s
-                                    end_col_letter = _col_letters(len(header))
-
-                                    users_ws.update(f"A{row_no}:{end_col_letter}{row_no}", [row_vals])
-                                    st.success("Password reset. User will be forced to change it on next login.")
+                                    # Write back
+                                    end_col_letter = chr(64 + len(header))
+                                    ws.update(f"A{row_no}:{end_col_letter}{row_no}", [row_vals])
                                     get_user_credentials.clear()
+                                    clear_cache()
+                                    st.success("✅ Password reset — user must change it next login.")
                                     st.rerun()
+                            except APIError:
+                                st.error("Google API write error. Try again later.")
                             except Exception as e:
-                                st.error(f"Failed to reset password: {e}")
+                                st.error(f"Reset failed: {e}")
 
+                    # --- Delete user ---
                     if do_delete:
-                        if not confirm:
-                            st.error("Please check “Yes, delete this user” to confirm.")
+                        if not confirm_delete:
+                            st.error("Please confirm deletion first.")
                         else:
                             try:
-                                row_no = _find_row_by_email(users_ws, sel_email)
+                                ws = client.open_by_key(SHEET_ID).worksheet("Users")
+                                email_col = ws.col_values(ws.row_values(1).index("email") + 1)
+                                row_no = next((i for i, v in enumerate(email_col, start=1)
+                                            if v.strip().lower() == sel_email.strip().lower()), None)
                                 if not row_no or row_no == 1:
-                                    st.error("Couldn't locate user row (or tried to delete the header).")
+                                    st.error("Couldn't locate user row.")
                                 else:
-                                    users_ws.delete_rows(row_no)
-                                    st.success("User removed.")
+                                    ws.delete_rows(row_no)
                                     get_user_credentials.clear()
+                                    clear_cache()
+                                    st.success("✅ User removed.")
                                     st.rerun()
+                            except APIError:
+                                st.error("Google API write error. Try again later.")
                             except Exception as e:
-                                st.error(f"Failed to remove user: {e}")
+                                st.error(f"Delete failed: {e}")
+
         # To View Logins
         with st.expander("Login Activity", expanded=False):
-            # Sheets setup
-            try:
-                creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
-                client = gspread.authorize(creds)
-                logs_ws = client.open_by_key(SHEET_ID).worksheet("LoginLogs")
-            except Exception as e:
-                st.error(f"Couldn't open LoginLogs sheet: {e}")
+            # --- Load cached sheet data safely ---
+            df_logs = safe_get_records("LoginLogs")
+
+            # --- Manual refresh button (clear cache + rerun) ---
+            if st.button("🔄 Refresh Logs"):
+                clear_cache()
+                st.rerun()
+
+            # --- Handle empty logs ---
+            if df_logs.empty:
+                st.info("No login activity found.")
                 st.stop()
 
-            # Load logs (view-only)
-            rows = logs_ws.get_all_records()  # expected columns: email, activity_type, timestamp, ip_address
-            if st.button('🔄 Refresh Logs'): load_logs.clear()
-            df_logs = load_logs()
-            if df_logs.empty:
-                df_logs = pd.DataFrame(columns=["email", "activity_type", "timestamp", "ip_address"])
+            # --- Display main log dataframe ---
             st.dataframe(df_logs, use_container_width=True)
 
-            # rows is kept for filters below
-            df_logs = pd.DataFrame(rows) if rows else pd.DataFrame(
-                columns=["email", "activity_type", "timestamp", "ip_address"]
-            )
-
-            # Sort newest first if timestamp exists
-            # --- Filters (Email + Date Range) ---
-            if df_logs.empty:
-                # (removed duplicate df_logs display), use_container_width=True)
-                df_logs = pd.DataFrame(columns=["email", "activity_type", "timestamp", "ip_address"])
-            else:
-                # Ensure timestamp is datetime (already done above, but guard anyway)
-                if "timestamp" in df_logs.columns and not pd.api.types.is_datetime64_any_dtype(df_logs["timestamp"]):
+            # --- Ensure timestamp column is proper datetime ---
+            if "timestamp" in df_logs.columns:
+                if not pd.api.types.is_datetime64_any_dtype(df_logs["timestamp"]):
                     df_logs["timestamp"] = pd.to_datetime(df_logs["timestamp"], errors="coerce")
 
-                # Email filter
+            # =======================================================
+            # FILTERS (Email + Date Range)
+            # =======================================================
+            if not df_logs.empty:
+                # --- Email filter ---
                 if "email" in df_logs.columns:
                     email_options = sorted(df_logs["email"].dropna().astype(str).unique().tolist())
                     selected_emails = st.multiselect(
-                        "Filter by email", options=email_options, default=email_options
+                        "Filter by Email",
+                        options=email_options,
+                        default=email_options,
                     )
                 else:
                     selected_emails = None
 
-                # Date range filter (only if we have timestamps)
-                if "timestamp" in df_logs.columns:
+                # --- Date range filter (if timestamps exist) ---
+                if "timestamp" in df_logs.columns and df_logs["timestamp"].notna().any():
                     ts_nonnull = df_logs["timestamp"].dropna()
-                    if not ts_nonnull.empty:
-                        default_start = ts_nonnull.min().date()
-                        default_end   = ts_nonnull.max().date()
-                        start_date, end_date = st.date_input(
-                            "Filter by date range",
-                            value=(default_start, default_end),
-                            min_value=default_start,
-                            max_value=default_end
-                        )
-                    else:
-                        start_date = end_date = None
+                    default_start = ts_nonnull.min().date()
+                    default_end = ts_nonnull.max().date()
+                    start_date, end_date = st.date_input(
+                        "Filter by Date Range",
+                        value=(default_start, default_end),
+                        min_value=default_start,
+                        max_value=default_end,
+                    )
                 else:
                     start_date = end_date = None
 
-                # Apply filters
+                # --- Apply filters ---
                 filtered = df_logs.copy()
 
                 if selected_emails is not None and len(selected_emails) != len(email_options):
@@ -423,36 +416,33 @@ elif st.session_state.authenticated:
                     mask = filtered["timestamp"].dt.date.between(start_date, end_date)
                     filtered = filtered[mask]
 
-                st.dataframe(filtered, use_container_width=True)
+                # --- Show filtered data ---
+                st.dataframe(filtered.sort_values("timestamp", ascending=False), use_container_width=True)
+            else:
+                st.info("No log entries available yet.")
 
-        #CRUD on Files
+
+        # --- CRUD on Files ---
         with st.expander("File Management", expanded=False):
-             # Sheets setup
-            try:
-                creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
-                client = gspread.authorize(creds)
-                files_ws = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
-            except Exception as e:
-                st.error(f"Couldn't open UploadedFiles sheet: {e}")
-                st.stop()
+            # --- Load cached sheet data safely ---
+            df_files = safe_get_records("UploadedFiles")
+
+            # --- Manual refresh button (clear cache + rerun) ---
+            if st.button("🔄 Refresh Files"):
+                clear_cache()
+                st.rerun()
 
             # --- View files ---
-            rows = files_ws.get_all_records()  # expects headers: file_name, file_type, uploader_email, timestamp, file_url
-            if st.button('🔄 Refresh Files'): load_files.clear()
-            df_files = load_files()
             if df_files.empty:
-                df_files = pd.DataFrame(columns=["file_name", "file_type", "uploader_email", "timestamp", "file_url"])
-            st.dataframe(df_files, use_container_width=True)
-
-            # rows is kept for delete logic below
-            df_files = pd.DataFrame(rows) if rows else pd.DataFrame(
-                columns=["file_name", "file_type", "uploader_email", "timestamp", "file_url"]
-            )
-            # (removed duplicate df_files display), use_container_width=True)
+                st.info("No uploaded files found.")
+            else:
+                st.dataframe(df_files, use_container_width=True)
 
             st.divider()
 
-            # --- Add (upload) a new file ---
+            # ===========================================================
+            # ADD (UPLOAD) NEW FILE
+            # ===========================================================
             st.subheader("Add File")
             with st.form("admin_upload_form"):
                 uploaded_file = st.file_uploader("Choose a file (.xlsx)", type=["xlsx"], key="admin_file_uploader")
@@ -466,57 +456,84 @@ elif st.session_state.authenticated:
                     elif not custom_name.strip():
                         st.error("Please enter a file name.")
                     else:
-                        url = upload_to_drive_and_log(uploaded_file, file_type, st.session_state.email, custom_name)
-                        if url:
-                            st.success("✅ Uploaded and logged successfully.")
-                            st.write(f"[View File]({url})")
-                            st.rerun()
-                        else:
-                            st.error("Upload or logging failed.")
+                        try:
+                            url = upload_to_drive_and_log(uploaded_file, file_type, st.session_state.email, custom_name)
+                            if url:
+                                clear_cache()
+                                st.success("✅ Uploaded and logged successfully.")
+                                st.write(f"[View File]({url})")
+                                st.rerun()
+                            else:
+                                st.error("Upload or logging failed.")
+                        except Exception as e:
+                            st.error(f"Upload failed: {e}")
 
             st.divider()
 
-            # --- Delete a file record (sheet only) ---
+            # ===========================================================
+            # DELETE FILE RECORD
+            # ===========================================================
             st.subheader("Delete File Record")
+
             if df_files.empty:
                 st.info("No uploaded files found.")
             else:
-                to_delete = st.selectbox("Select a file to delete (record only)", df_files["file_name"].tolist(), key="admin_file_to_delete")
-                # Show a little context
+                # --- Choose record to delete ---
+                to_delete = st.selectbox(
+                    "Select a file record to delete",
+                    df_files["file_name"].dropna().tolist(),
+                    key="admin_file_to_delete"
+                )
+
+                # --- Show quick details ---
                 try:
                     sel_row = df_files[df_files["file_name"] == to_delete].iloc[0]
-                    st.caption(f"Type: {sel_row.get('file_type','?')} • Uploaded by: {sel_row.get('uploader_email','?')} • At: {sel_row.get('timestamp','?')}")
+                    st.caption(
+                        f"Type: {sel_row.get('file_type', '?')} • "
+                        f"Uploaded by: {sel_row.get('uploader_email', '?')} • "
+                        f"At: {sel_row.get('timestamp', '?')}"
+                    )
                 except Exception:
                     pass
 
                 confirm = st.checkbox("Yes, delete this record")
                 delete_clicked = st.button("🗑️ Delete File Record")
 
+                # --- Delete action ---
                 if delete_clicked:
                     if not confirm:
-                        st.error("Please check “Yes, delete this record” to confirm.")
+                        st.error("Please confirm deletion first.")
                     else:
                         try:
-                            # Exact-match by file_name (header-agnostic)
-                            header = [str(h).strip().lower() for h in files_ws.row_values(1)]
+                            # ✅ Open the worksheet (only for the operation)
+                            files_ws = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
+
+                            header = [h.strip().lower() for h in files_ws.row_values(1)]
                             if "file_name" not in header:
-                                st.error("Header 'file_name' not found in UploadedFiles.")
+                                st.error("Header 'file_name' not found in UploadedFiles sheet.")
                             else:
                                 col_idx = header.index("file_name") + 1
                                 names = files_ws.col_values(col_idx)
-                                row_no = next((i for i, v in enumerate(names, start=1) if str(v).strip() == str(to_delete).strip()), None)
+                                row_no = next(
+                                    (i for i, v in enumerate(names, start=1)
+                                    if str(v).strip() == str(to_delete).strip()),
+                                    None,
+                                )
 
                                 if not row_no or row_no == 1:
-                                    st.error("Couldn't locate file row (or tried to delete the header).")
+                                    st.error("Couldn't locate file row (or tried to delete header).")
                                 else:
-                                    files_ws.delete_rows(row_no)  # remove the log record
-                                    st.success("File record removed.")
+                                    files_ws.delete_rows(row_no)
+                                    clear_cache()
+                                    st.success("✅ File record removed successfully.")
                                     st.rerun()
+                        except APIError:
+                            st.error("Google API temporarily unavailable. Please try again later.")
                         except Exception as e:
-                            st.error(f"Failed to delete file record: {e}")
-        #Report Generator
-        #with st.expander("Report Generation", expanded=False):
-        #st.info("Admins can generate reports here, or use the general 'Generate Report' section below. (Coming soon)")
+                            st.error(f"Failed to delete record: {e}")
+
+
+    
     # =========================================================
     # Upload interface (collapsed)
     # =========================================================
@@ -535,21 +552,34 @@ elif st.session_state.authenticated:
         except Exception as _e:
             st.info("Templates will appear here when available.")
 
-    with st.expander("⬆Upload File (Budget or Expense)", expanded=False):
+    with st.expander("⬆ Upload File (Budget or Expense)", expanded=False):
         with st.form("upload_form"):
-            uploaded_file = st.file_uploader("Choose a file", type=["xlsx"])
+            uploaded_file = st.file_uploader("Choose a file (.xlsx)", type=["xlsx"])
             custom_name = st.text_input("Enter file name (REQUIRED)")
             file_type = st.selectbox("Type of file", ["budget(opex)", "budget(capex)", "expense"])
             submit_upload = st.form_submit_button("Upload File")
 
-            if submit_upload and uploaded_file:
-                if not custom_name.strip():
-                    st.error("Please enter a file name")
+            if submit_upload:
+                if not uploaded_file:
+                    st.error("Please choose a file.")
+                elif not custom_name.strip():
+                    st.error("Please enter a file name.")
                 else:
-                    url = upload_to_drive_and_log(uploaded_file, file_type, st.session_state.email, custom_name)
-                    if url:
-                        st.success("✅ Uploaded and logged successfully.")
-                        st.write(f"[View File]({url})")
+                    try:
+                        # ✅ Perform upload and log it
+                        url = upload_to_drive_and_log(uploaded_file, file_type, st.session_state.email, custom_name)
+
+                        if url:
+                            # ✅ Clear cache so admins see it instantly in their tables
+                            clear_cache()
+                            st.success("✅ Uploaded and logged successfully.")
+                            st.write(f"[View File]({url})")
+                            st.experimental_rerun()
+                        else:
+                            st.error("Upload or logging failed. Please try again.")
+                    except Exception as e:
+                        st.error(f"Upload failed: {e}")
+
 
     # =========================================================
     # Generate Report (collapsed, no auto-selection)
