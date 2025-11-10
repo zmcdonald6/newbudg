@@ -1,0 +1,3 @@
+#ignore secrets
+.streamlit/
+__pycache__/
