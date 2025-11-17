@@ -223,7 +223,7 @@ elif st.session_state.authenticated:
         st.subheader("Admin Panel")
 
         #Global refresh for cached sheets
-        if st.button("♻️ Refresh All Google Sheet Data"):
+        if st.button("♻️ Data Refresh"):
                     clear_cache()
                     st.success("Cache cleared.")
                     st.rerun()
