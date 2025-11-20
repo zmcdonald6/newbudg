@@ -2,7 +2,5 @@
 .streamlit/
 __pycache__/
 test_connection.py
-~$Budget_Template_BTA.xlsx
-~$Expense_Template_BTA.xlsx
-BudgetTemplateTest.xlsx
+~$*.xlsx
 ExpenseTemplateTest.xlsx
