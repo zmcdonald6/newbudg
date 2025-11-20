@@ -26,38 +26,51 @@ def _extract_label(cat_str: str) -> str:
 
 # ------------------- BUDGET -------------------
 def process_budget(file_like: Union[str, IO[bytes]]) -> pd.DataFrame:
-    """
-    Reads the official Budget template:
-    Category | Subcategory | Jan..Dec | Notes
-    Returns: CatLabel, Category, Sub-Category, Total
-    """
     try:
         df = pd.read_excel(file_like, sheet_name="Budget")
-    except Exception:
+    except Exception as e:
         df = pd.read_excel(file_like, sheet_name=0)
+        print(e)
 
     df.columns = [str(c).strip() for c in df.columns]
+
+    MONTHS = [
+        "January","February","March","April","May","June",
+        "July","August","September","October","November","December"
+    ]
 
     required = ["Category","Subcategory"] + MONTHS + ["Notes"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Budget sheet missing required columns: {', '.join(missing)}")
 
+    # Convert months to numeric
     for m in MONTHS:
         df[m] = pd.to_numeric(df[m], errors="coerce").fillna(0.0)
 
+    # Compute yearly total
     df["Total"] = df[MONTHS].sum(axis=1)
 
-    mask = df["Category"].astype(str).str.strip().ne("") & df["Subcategory"].astype(str).str.strip().ne("")
-    out = df.loc[mask, ["Category","Subcategory","Total"]].copy()
+    # Keep only valid non-empty rows
+    mask = (
+        df["Category"].astype(str).str.strip().ne("") &
+        df["Subcategory"].astype(str).str.strip().ne("")
+    )
 
-    # Extract CatLabel directly from Category prefix
+    # IMPORTANT: KEEP THE MONTH COLUMNS FOR CLASSIFICATION
+    out = df.loc[
+        mask,
+        ["Category","Subcategory"] + MONTHS + ["Total"]
+    ].copy()
+
+    # Extract Category Label
     out["CatLabel"] = out["Category"].apply(_extract_label)
 
-    out = out.rename(columns={"Subcategory":"Sub-Category"})
-    out["Total"] = pd.to_numeric(out["Total"], errors="coerce")
+    out = out.rename(columns={"Subcategory": "Sub-Category"})
 
-    return out[["CatLabel","Category","Sub-Category","Total"]]
+    # Final return — includes monthly columns
+    return out[["CatLabel","Category","Sub-Category"] + MONTHS + ["Total"]]
+
 
 # ------------------- EXPENSES -------------------
 def process_expenses(file_like: Union[str, IO[bytes]]) -> pd.DataFrame:

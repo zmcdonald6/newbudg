@@ -17,9 +17,10 @@ from analysis import process_budget, process_expenses
 from fxhelper import get_usd_rates, convert_row_amount_to_usd
 from google_safe import safe_get_records, clear_cache, client, SHEET_ID
 from gspread.exceptions import APIError
+from classification_utils import load_budget_state_monthly, save_budget_state_monthly
+from dashboard_classification import dashboard
 
 # Constants
-
 INACTIVITY_LIMIT_MINUTES = 10
 SHEET_ID = "1VxrFw6txf_XFf0cxzMbPGHnOn8N5JGeeS0ve5lfLqCU"
 SCOPE = [
@@ -27,7 +28,7 @@ SCOPE = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-
+## Helper functions for data caching to prevent read overloads.
 # --- Cached Google client ---
 @st.cache_resource
 def get_gclient():
@@ -62,6 +63,60 @@ def cached_fx_rates():
 @st.cache_data(ttl=600)
 def cached_file_download(url: str):
     return requests.get(url).content
+
+
+#Helper to colour code Variance column conditionally
+##Rules:
+# 1) if spent>budget, colour = green
+# 2) if spent<budget and spent >= 70% of budget, colour = orange
+# 3) else, colour =red 
+def variance_color_style(row):
+    try:
+        budget = float(row["Amount Budgeted"])
+    except:
+        budget = 0.0
+
+    try:
+        spent = float(row["Amount Spent (USD)"])
+    except:
+        spent = 0.0
+
+    try:
+        variance = float(row["Variance (USD)"])
+    except:
+        variance = 0.0
+
+    # default = no styling
+    styles = [""] * len(row)
+
+    # Apply to variance column only
+    if variance < 0:
+        colour = "background-color: #8B0000; color: white;" #red
+    elif variance > 0 and spent >= 0.7 * budget:
+        colour = "background-color: orange; color: black;"  #orange
+    elif variance > 0:
+        colour = "background-color: #4CAF50; color: white;" #green
+    else:
+        colour = ""  # variance == 0
+    
+    try:
+        index = row.index.get_loc("Variance (USD)")
+        styles[index] = colour
+    except Exception as e:
+        print (f"An error has occured: {e}")
+    return styles
+
+#Helper function to create a status column.
+def get_variance_status(budget, spent, variance):
+    if variance < 0:
+        return "Overspent"
+    elif variance > 0 and spent >= 0.70 * budget:
+        return "Warning — ≥70% Spent"
+    elif variance > 0:
+        return "Within Budget"
+    else:
+        return "No Expenditure / OOB"
+
 
 # Initialize session
 if "authenticated" not in st.session_state:
@@ -581,6 +636,7 @@ elif st.session_state.authenticated:
                         st.error(f"Upload failed: {e}")
 
 
+
     # =========================================================
     # Generate Report (collapsed, no auto-selection)
     # =========================================================
@@ -639,7 +695,9 @@ elif st.session_state.authenticated:
                 df_budget = process_budget(BytesIO(requests.get(budget_url).content))
                 df_budget = df_budget[~df_budget["Sub-Category"].str.strip().str.lower().eq("total")]
 
-                from analysis import process_budget, process_expenses
+
+
+
                 try:
                     df_expense = process_expenses(BytesIO(requests.get(expense_url).content))
                 except Exception as e:
@@ -680,6 +738,20 @@ elif st.session_state.authenticated:
                 df_expense["Amount (USD)"] = df_expense.apply(
                     lambda r: convert_row_amount_to_usd(r, fx_rates, df_expense), axis=1
                 )
+
+                #st.markdown("""
+                #### 📘 Variance Column Key
+                #- <span style="background-color:#ff4d4d; padding:4px 10px; border-radius:4px; color:white;">Negative Variance</span> — Overspent  
+                #- <span style="background-color:orange; padding:4px 10px; border-radius:4px; color:black;">Spent ≥ 70% of Budget</span> — Warning Zone  
+                #- <span style="background-color:#4CAF50; padding:4px 10px; border-radius:4px; color:white;">Positive Variance</span> — Healthy / Under Budget  
+                #""", unsafe_allow_html=True)
+
+                #Generates interactive dashboard
+                dashboard(df_budget=df_budget,
+                          df_expense=df_expense,
+                          selected_budget=selected_budget,
+                          load_budget_state_monthly=load_budget_state_monthly,
+                          save_budget_state_monthly=save_budget_state_monthly)
 
                 # ===============================================================
                 # Filters (Budget Category & Vendor)
@@ -735,8 +807,16 @@ elif st.session_state.authenticated:
                 final_view["Variance (USD)"] = final_view["Amount Budgeted"].fillna(0) - final_view["Amount Spent (USD)"].fillna(0)
                 for col in ["Amount Budgeted", "Amount Spent (USD)", "Variance (USD)"]:
                     final_view[col] = (final_view[col].astype(float).round(2)).fillna(0)
+                final_view["Status"] = final_view.apply(
+                lambda row: get_variance_status(
+                    row["Amount Budgeted"],
+                    row["Amount Spent (USD)"],
+                    row["Variance (USD)"],
+                ),
+                axis=1
+            )
 
-                final_view = final_view[["Category", "Sub-Category", "Amount Budgeted", "Amount Spent (USD)", "Variance (USD)"]]
+                final_view = final_view[["Category", "Sub-Category", "Amount Budgeted", "Amount Spent (USD)", "Variance (USD)", "Status"]]
                 final_view.sort_values(["Category", "Sub-Category"], inplace=True)
 
                 # Show subcategory table (display "Out of Budget" where budget is NaN)
@@ -744,12 +824,22 @@ elif st.session_state.authenticated:
                     return "Out of Budget" if pd.isna(x) else f"{x:.2f}"
 
                 with st.expander("📄 Expenditures (USD) — Subcategory", expanded=False):
-                    st.dataframe(
+                    #st.dataframe(
+                    #    final_view.style
+                    #        .format({"Amount Spent (USD)": "{:.2f}", "Variance (USD)": "{:.2f}"})
+                    #        .format(fmt_budget, subset=["Amount Budgeted"]),
+                    #    use_container_width=True
+                    #)
+                    styled_final = (
                         final_view.style
-                            .format({"Amount Spent (USD)": "{:.2f}", "Variance (USD)": "{:.2f}"})
-                            .format(fmt_budget, subset=["Amount Budgeted"]),
-                        use_container_width=True
+                            .apply(variance_color_style, axis=1)
+                            .format({
+                                "Amount Budgeted": "{:,.2f}",
+                                "Amount Spent (USD)": "{:,.2f}",
+                                "Variance (USD)": "{:,.2f}",
+                            })
                     )
+                    st.dataframe(styled_final, use_container_width=True)
 
                 # ===============================================================
                 # Category view (rolled-up, no charts)
@@ -774,19 +864,37 @@ elif st.session_state.authenticated:
                 for col in ["Amount Budgeted", "Amount Spent (USD)", "Variance (USD)"]:
                     cat_view[col] = cat_view[col].astype(float).round(2)
 
-                cat_view = cat_view[["Category", "Amount Budgeted", "Amount Spent (USD)", "Variance (USD)"]]
+
+                cat_view["Status"] = cat_view.apply(
+                    lambda row: get_variance_status(
+                        row["Amount Budgeted"],
+                        row["Amount Spent (USD)"],
+                        row["Variance (USD)"],
+                    ),
+                    axis=1
+                )
+                cat_view = cat_view[["Category", "Amount Budgeted", "Amount Spent (USD)", "Variance (USD)", "Status"]]
                 cat_view.sort_values("Category", inplace=True)
 
                 with st.expander("📊Expenditure Summary (USD) — Category", expanded=False):
-                    st.dataframe(
-                        cat_view.style.format({
-                            "Amount Budgeted": "{:.2f}",
-                            "Amount Spent (USD)": "{:.2f}",
-                            "Variance (USD)": "{:.2f}",
-                        }),
-                        use_container_width=True
+                    #st.dataframe(
+                    #    cat_view.style.format({
+                    #        "Amount Budgeted": "{:.2f}",
+                    #        "Amount Spent (USD)": "{:.2f}",
+                    #        "Variance (USD)": "{:.2f}",
+                    #    }),
+                    #    use_container_width=True
+                    #)
+                    styled_cat = (
+                        cat_view.style
+                            .apply(variance_color_style, axis=1)
+                            .format({
+                                "Amount Budgeted": "{:,.2f}",
+                                "Amount Spent (USD)": "{:,.2f}",
+                                "Variance (USD)": "{:,.2f}",
+                            })
                     )
-
+                    st.dataframe(styled_cat, use_container_width=True)
                 # ===============================================================
                 # Full budget totals (overall summary)
                 # ===============================================================
@@ -924,21 +1032,45 @@ elif st.session_state.authenticated:
                     )
                     df_display.sort_values(["Category", "Sub-Category"], inplace=True)
 
+                    #Adding indentation to subcategory items.
+                    INDENT = "\u2003\u2003\u2003" 
+
                     # ---- Add arrow prefix to subcategories (not totals) ----
                     df_display.loc[df_display["Sub-Category"].notna() & (df_display["Sub-Category"] != ""), "Sub-Category"] = (
-                        "→ " + df_display.loc[df_display["Sub-Category"].notna() & (df_display["Sub-Category"] != ""), "Sub-Category"].astype(str)
+                        INDENT + "→ " + df_display.loc[df_display["Sub-Category"].notna() & (df_display["Sub-Category"] != ""), "Sub-Category"].astype(str)
                     )
 
                     # ---- Reset index so no row numbers show ----
                     df_display.reset_index(drop=True, inplace=True)
 
+                    df_display["Status"] = df_display.apply(
+                        lambda row: get_variance_status(
+                            row["Amount Budgeted"],
+                            row["Amount Spent (USD)"],
+                            row["Variance (USD)"],
+                        ),
+                        axis=1
+                    )
+
+
                     # ---- Columns to show ----
-                    display_cols = ["Category", "Sub-Category", "Amount Budgeted", "Amount Spent (USD)", "Variance (USD)"]
+                    display_cols = ["Category", "Sub-Category", "Amount Budgeted", "Amount Spent (USD)", "Variance (USD)", "Status"]
+
+                    #st.markdown("""
+                    # 📘 Variance Column Key
+                    #- <span style="background-color:#ff4d4d; padding:4px 10px; border-radius:4px; color:white;">Negative Variance</span> — Overspent  
+                    #- <span style="background-color:orange; padding:4px 10px; border-radius:4px; color:black;">Spent ≥ 70% of Budget</span> — Warning Zone  
+                    #- <span style="background-color:#4CAF50; padding:4px 10px; border-radius:4px; color:white;">Positive Variance</span> — Healthy / Under Budget  
+                    #""", unsafe_allow_html=True)
+
+                   
+
 
                     # ---- Style: bold category total rows (where Sub-Category is blank) ----
                     st.dataframe(
                         df_display[display_cols].style
                             .apply(lambda row: ["font-weight: bold" if not row["Sub-Category"] or row["Sub-Category"] == "→ " else "" for _ in row], axis=1)
+                            .apply(variance_color_style,axis=1)
                             .format({
                                 "Amount Budgeted": lambda v, is_oob=None: "OOB" if is_oob else f"{v:,.2f}",
                                 "Amount Spent (USD)": "{:,.2f}",
@@ -947,5 +1079,5 @@ elif st.session_state.authenticated:
                         use_container_width=True
                     )
 
-
+                   
 
