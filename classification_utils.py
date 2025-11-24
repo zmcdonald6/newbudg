@@ -1,54 +1,148 @@
-from google_safe import safe_get_records, get_client, SHEET_ID
+import json
 import pandas as pd
+from google_safe import get_client, SHEET_ID
 from datetime import datetime
+import pymysql
 import streamlit as st
 
-# Loading specific budget file.
-def load_budget_state_monthly(file_name: str):
-    df = safe_get_records("BudgetStateMonthly")
+CHUNK_SIZE = 48000  # safely under Google Sheets 50k cell limit
 
-    if df.empty:
+host=st.secrets["MYSQL"]["host"],
+user=st.secrets["MYSQL"]["user"],
+password=st.secrets["MYSQL"]["password"],
+database=st.secrets["MYSQL"]["database"]
+
+def get_db():
+    try:
+        pymysql.connect(
+            host=host,
+            user=user,
+            password=password,
+            database=database,
+            cursorclass=pymysql.cursors.DictCursor
+        )
+        print (f"Connected to database name: {database}")
+    except Exception as e:
+        print ("Connection failed")
+
+
+
+
+# ============================================================
+# LOAD — read JSON stored across multiple rows
+# ============================================================
+def load_budget_state_monthly(file_name: str):
+    """
+    Safely loads JSON-chunked classification data from BudgetStateMonthly.
+    - Reads all chunks from column A
+    - Joins them into one JSON string
+    - Validates JSON structure
+    - Returns only the rows for the requested budget
+    - Never crashes on malformed data
+    """
+
+    client = get_client()
+
+    try:
+        ws = client.open_by_key(SHEET_ID).worksheet("BudgetStateMonthly")
+    except Exception:
+        # Worst case fallback → empty DF
         return pd.DataFrame(columns=[
-            "file_name","Category","Sub-Category","Month","Amount","Status Category"
+            "Category", "Sub-Category", "Month", "Amount", "Status Category"
         ])
 
-    df = df[df["file_name"] == file_name]
-    return df
+    # Read all rows in column A (each row = 1 JSON chunk)
+    try:
+        chunks = ws.col_values(1)
+    except Exception:
+        return pd.DataFrame(columns=[
+            "Category", "Sub-Category", "Month", "Amount", "Status Category"
+        ])
 
-# SAVE — saves budget state, overrides previous rows for this budget file 
-def save_budget_state_monthly(file_name: str, df_melted: pd.DataFrame, user_email: str):
+    # EMPTY sheet
+    if not chunks or all(c.strip() == "" for c in chunks):
+        return pd.DataFrame(columns=[
+            "Category", "Sub-Category", "Month", "Amount", "Status Category"
+        ])
+
+    # Build JSON string (safe join)
+    json_str = "".join(c for c in chunks if c and c.strip() != "")
+
+    if not json_str.strip():
+        return pd.DataFrame(columns=[
+            "Category", "Sub-Category", "Month", "Amount", "Status Category"
+        ])
+
+    # Parse JSON safely
+    try:
+        store = json.loads(json_str)
+    except Exception:
+        # Corrupted JSON → return safe empty DF
+        return pd.DataFrame(columns=[
+            "Category", "Sub-Category", "Month", "Amount", "Status Category"
+        ])
+
+    # Extract records for requested budget file
+    rows = store.get(file_name, [])
+
+    # Ensure valid structure
+    if not isinstance(rows, list):
+        return pd.DataFrame(columns=[
+            "Category", "Sub-Category", "Month", "Amount", "Status Category"
+        ])
+
+    # Convert to DataFrame
+    try:
+        df = pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame(columns=[
+            "Category", "Sub-Category", "Month", "Amount", "Status Category"
+        ])
+
+    # Guarantee required columns exist
+    required = ["Category", "Sub-Category", "Month", "Amount", "Status Category"]
+    for col in required:
+        if col not in df.columns:
+            df[col] = None
+
+    return df[required]
+
+
+# ============================================================
+# SAVE — write chunked JSON (safe for big data)
+# ============================================================
+def save_budget_state_monthly(file_name, df_melted, user_email):
     client = get_client()
     ws = client.open_by_key(SHEET_ID).worksheet("BudgetStateMonthly")
 
-    # Read existing rows
-    rows = ws.get_all_records()
+    # First load existing JSON (chunks → stitched)
+    chunks = ws.col_values(1)
+    if chunks:
+        try:
+            store = json.loads("".join(chunks))
+        except:
+            store = {}
+    else:
+        store = {}
 
-    # Remove existing rows for this budget file
-    retained = [r for r in rows if r.get("file_name") != file_name]
-
-    # Clear sheet, rewrite header
-    ws.clear()
-    ws.append_row([
-        "file_name","Category","Sub-Category","Month","Amount",
-        "Status Category","updated_by","updated_at"
-    ])
-
-    # Write retained rows
-    for r in retained:
-        ws.append_row(list(r.values()))
-
-    # Write new rows
+    # Convert df into list of dicts
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    for _, r in df_melted.iterrows():
-        ws.append_row([
-            file_name,
-            r["Category"],
-            r["Sub-Category"],
-            r["Month"],
-            r["Amount"],
-            r["Status Category"],
-            user_email,
-            now
-        ])
+    records = df_melted.to_dict(orient="records")
 
-    st.cache_data.clear()   #refreshing cache
+    # Add metadata to each record
+    for r in records:
+        r["updated_by"] = user_email
+        r["updated_at"] = now
+
+    # Replace only this file entry
+    store[file_name] = records
+
+    # Convert entire DB → JSON string
+    json_str = json.dumps(store)
+
+    # Split into chunks to avoid Google’s 50k limit
+    chunks = [json_str[i:i+CHUNK_SIZE] for i in range(0, len(json_str), CHUNK_SIZE)]
+
+    # Clear worksheet and write each chunk in its own row
+    ws.clear()
+    ws.update("A1", [[chunk] for chunk in chunks])
