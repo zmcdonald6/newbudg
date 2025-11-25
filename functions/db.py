@@ -6,6 +6,7 @@ import pymysql
 import streamlit as st
 from datetime import datetime
 import requests
+import pandas as pd
 
 # Initial database connection
 def get_db():
@@ -153,6 +154,21 @@ def get_uploaded_files():
 
 #Budget State Operations
 def load_budget_state_monthly(file_name: str):
+    #db = get_db()
+    #with db.cursor() as c:
+    #    c.execute("""
+    #        SELECT category, subcategory, month, amount, status_category
+    #        FROM budget_state
+    #        WHERE file_name = %s
+    #    """, (file_name,))
+    #    rows = c.fetchall()
+    #return rows
+    """
+    Loads budget-state monthly classification from MySQL.
+    Always returns a DataFrame with the required columns.
+    Never returns a tuple or list.
+    """
+
     db = get_db()
     with db.cursor() as c:
         c.execute("""
@@ -161,8 +177,33 @@ def load_budget_state_monthly(file_name: str):
             WHERE file_name = %s
         """, (file_name,))
         rows = c.fetchall()
-    return rows
 
+    # If nothing in DB → return empty DataFrame with required columns
+    if not rows:
+        return pd.DataFrame(columns=[
+            "Category", "Sub-Category", "Month",
+            "Amount", "Status Category"
+        ])
+
+    # Convert to DataFrame
+    df = pd.DataFrame(rows)
+
+    # Normalize column names to match dashboard expectations
+    df = df.rename(columns={
+        "category": "Category",
+        "subcategory": "Sub-Category",
+        "month": "Month",
+        "amount": "Amount",
+        "status_category": "Status Category",
+    })
+
+    # Ensure required columns exist
+    required = ["Category", "Sub-Category", "Month", "Amount", "Status Category"]
+    for col in required:
+        if col not in df.columns:
+            df[col] = None
+
+    return df[required]
 
 def save_budget_state_monthly(file_name, df_melted, user_email):
     """
