@@ -2,22 +2,23 @@ import streamlit as st
 import bcrypt
 import base64
 from datetime import datetime, timedelta
-import gspread
-from google.oauth2 import service_account
+#import gspread
+#from google.oauth2 import service_account
 import pandas as pd
 import requests
 from io import BytesIO
-import re
+#import re
 
 from uritemplate import expand
 
-from auth import get_user_credentials, log_activity
-from drive_utils import upload_to_drive_and_log
+#from auth import get_user_credentials
+from functions.db import *
+from functions.drive_utils import upload_to_drive_and_log
 from analysis import process_budget, process_expenses
 from fxhelper import get_usd_rates, convert_row_amount_to_usd
-from google_safe import safe_get_records, clear_cache, get_client, SHEET_ID
-from gspread.exceptions import APIError
-from classification_utils import load_budget_state_monthly, save_budget_state_monthly
+#from google_safe import clear_cache, get_client, SHEET_ID
+#from gspread.exceptions import APIError
+#from classification_utils import load_budget_state_monthly, save_budget_state_monthly
 from dashboard_classification import dashboard
 from functions.report_generator import render_generate_report_section
 
@@ -31,31 +32,31 @@ SCOPE = [
 
 ## Helper functions for data caching to prevent read overloads.
 # --- Cached Google client ---
-@st.cache_resource
-def get_gclient():
-    creds = service_account.Credentials.from_service_account_info(st.secrets["GOOGLE"], scopes=SCOPE)
-    return gspread.authorize(creds)
+#@st.cache_resource
+#def get_gclient():
+#    creds = service_account.Credentials.from_service_account_info(st.secrets["GOOGLE"], scopes=SCOPE)
+#    return gspread.authorize(creds)
 
-client = get_client()
+#client = get_client()
 
 # --- Cached data loaders ---
-@st.cache_data(ttl=60)
-def load_users():
-    ws = client.open_by_key(SHEET_ID).worksheet("Users")
-    rows = ws.get_all_records()
-    return pd.DataFrame(rows)
+#@st.cache_data(ttl=60)
+#def load_users():
+#    ws = client.open_by_key(SHEET_ID).worksheet("Users")
+#    rows = ws.get_all_records()
+#    return pd.DataFrame(rows)
 
-@st.cache_data(ttl=60)
-def load_logs():
-    ws = client.open_by_key(SHEET_ID).worksheet("LoginLogs")
-    rows = ws.get_all_records()
-    return pd.DataFrame(rows)
+#@st.cache_data(ttl=60)
+#def load_logs():
+#    ws = client.open_by_key(SHEET_ID).worksheet("LoginLogs")
+#    rows = ws.get_all_records()
+#    return pd.DataFrame(rows)
 
-@st.cache_data(ttl=60)
-def load_files():
-    ws = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
-    rows = ws.get_all_records()
-    return pd.DataFrame(rows)
+#@st.cache_data(ttl=60)
+#def load_files():
+#    ws = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
+#    rows = ws.get_all_records()
+#    return pd.DataFrame(rows)
 
 @st.cache_data(ttl=1800)
 def cached_fx_rates():
@@ -136,7 +137,8 @@ if "force_pw_change" not in st.session_state:
 if st.session_state.authenticated:
     if datetime.now() - st.session_state.last_active > timedelta(minutes=INACTIVITY_LIMIT_MINUTES):
         st.warning("⏱️ Session timed out due to inactivity.")
-        log_activity(st.session_state.email, "Auto Logout (Inactivity)")
+        ip = get_ip()
+        log_login_activity(st.session_state.email, "Auto Logout (Inactivity)", ip)
         st.session_state.authenticated = False
         st.rerun()
     else:
@@ -151,11 +153,10 @@ if not st.session_state.authenticated and not st.session_state.force_pw_change:
         submit = st.form_submit_button("Login")
 
         if submit:
-            users = get_user_credentials()["usernames"]
-            user = users.get(email)
+            user = get_user_by_email(email)
             if user:
                 try:
-                    decoded_hash = base64.b64decode(user["password"])
+                    decoded_hash = base64.b64decode(user["hashed_password"])
                     if bcrypt.checkpw(password.encode(), decoded_hash):
                         # success -> check first_login flag
                         st.session_state.email = email
@@ -197,38 +198,41 @@ elif st.session_state.force_pw_change:
                     encoded = base64.b64encode(new_hash).decode()
 
                     # Update Google Sheet
-                    creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
-                    client = gspread.authorize(creds)
-                    ws = client.open_by_key(SHEET_ID).worksheet("Users")
+                    #creds = service_account.Credentials.from_service_account_info(dict(st.secrets["GOOGLE"]), scopes=SCOPE)
+                    #client = gspread.authorize(creds)
+                    #ws = client.open_by_key(SHEET_ID).worksheet("Users")
 
                     # Find row by email
-                    cell = ws.find(st.session_state.email)
-                    row = cell.row
+                    #cell = ws.find(st.session_state.email)
+                    #row = cell.row
 
                     # Update the row values in header order
-                    header = ws.row_values(1)
-                    row_vals = ws.row_values(row)
+                    #header = ws.row_values(1)
+                    #row_vals = ws.row_values(row)
 
                     # pad if needed
-                    while len(row_vals) < len(header):
-                        row_vals.append("")
+                    #while len(row_vals) < len(header):
+                    #    row_vals.append("")
 
-                    # set new values
-                    hp_idx = header.index("hashed_password")
-                    fl_idx = header.index("first_login")
-                    row_vals[hp_idx] = encoded
-                    row_vals[fl_idx] = "FALSE"
+                    ## set new values
+                    #hp_idx = header.index("hashed_password")
+                    #fl_idx = header.index("first_login")
+                    #row_vals[hp_idx] = encoded
+                    #row_vals[fl_idx] = "FALSE"
 
                     # write back (A..end_col for this row)
-                    def _col_letters(n: int) -> str:
-                        s = ""
-                        while n > 0:
-                            n, r = divmod(n - 1, 26)
-                            s = chr(65 + r) + s
-                        return s
-                    end_col_letter = _col_letters(len(header))
+                    #def _col_letters(n: int) -> str:
+                    #    s = ""
+                    #    while n > 0:
+                    #        n, r = divmod(n - 1, 26)
+                    #        s = chr(65 + r) + s
+                    #    return s
+                    #end_col_letter = _col_letters(len(header))
 
-                    ws.update(f"A{row}:{end_col_letter}{row}", [row_vals])
+                    #ws.update(f"A{row}:{end_col_letter}{row}", [row_vals])
+
+                    #Update Password
+                    update_password(st.session_state.email, encoded)
 
                     # update session
                     st.session_state.user_record["first_login"] = False
@@ -260,11 +264,12 @@ elif st.session_state.authenticated:
     #            st.download_button("Download Expenses Template", data=_exp_bytes, file_name="Expenses_Template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_exp_tpl")
     #    except Exception as _e:
     #        st.info("Templates will appear here when available.")
-
-    log_activity(st.session_state.email, "Login")
+    ip = get_ip()
+    log_login_activity(st.session_state.email, "Login", ip)
 
     if st.button("🚪 Logout"):
-        log_activity(st.session_state.email, "Logout")
+        ip = get_ip()
+        log_login_activity(st.session_state.email, "Logout",ip)
         for key in list(st.session_state.keys()):
             st.session_state[key] = False if key == "authenticated" else ""
         st.rerun()
@@ -280,25 +285,26 @@ elif st.session_state.authenticated:
 
         #Global refresh for cached sheets
         if st.button("♻️ Data Refresh"):
-                    clear_cache()
+                    #clear_cache()
                     st.success("Cache cleared.")
                     st.rerun()
 
         #CRUD on Users
         with st.expander("User Management", expanded=False):
             # --- Load cached sheet data (API-safe) ---
-            df_users = safe_get_records("Users")
+            user_records = get_all_users()
+            df_users = pd.DataFrame(user_records)
 
             # Handle refresh manually (clear cache + rerun)
             if st.button("🔄 Refresh Users"):
-                clear_cache()
+                #clear_cache()
                 st.rerun()
 
             # --- Display users ---
             if df_users.empty:
                 st.info("No users found.")
             else:
-                st.dataframe(df_users, use_container_width=True)
+                st.dataframe(df_users, width="stretch")
 
             st.divider()
             st.subheader("Add New User")
@@ -321,14 +327,11 @@ elif st.session_state.authenticated:
                         try:
                             hashed = bcrypt.hashpw(new_password_plain.encode(), bcrypt.gensalt())
                             encoded = base64.b64encode(hashed).decode()
-                            ws = client.open_by_key(SHEET_ID).worksheet("Users")
-                            ws.append_row([new_name, new_username, new_email, encoded, new_role, "TRUE"])
-                            get_user_credentials.clear()
-                            clear_cache()
+                            add_user(new_name, new_username, new_email, encoded, new_role)
                             st.success("✅ User added — they’ll be required to change password on first login.")
                             st.rerun()
-                        except APIError:
-                            st.error("Google API temporarily unavailable. Please try again later.")
+                        #except APIError:
+                        #    st.error("Google API temporarily unavailable. Please try again later.")
                         except Exception as e:
                             st.error(f"Failed to add user: {e}")
 
@@ -356,34 +359,33 @@ elif st.session_state.authenticated:
                             st.error("Enter a new password.")
                         else:
                             try:
-                                ws = client.open_by_key(SHEET_ID).worksheet("Users")
+                                #ws = client.open_by_key(SHEET_ID).worksheet("Users")
 
                                 # Find row index (row 1 is header)
-                                email_col = ws.col_values(ws.row_values(1).index("email") + 1)
-                                row_no = next((i for i, v in enumerate(email_col, start=1)
-                                            if v.strip().lower() == sel_email.strip().lower()), None)
-                                if not row_no or row_no == 1:
-                                    st.error("Couldn't locate user row.")
-                                else:
-                                    header = ws.row_values(1)
-                                    row_vals = ws.row_values(row_no)
-                                    while len(row_vals) < len(header):
-                                        row_vals.append("")
+                                #email_col = ws.col_values(ws.row_values(1).index("email") + 1)
+                                #row_no = next((i for i, v in enumerate(email_col, start=1)
+                                #            if v.strip().lower() == sel_email.strip().lower()), None)
+                                #if not row_no or row_no == 1:
+                                #    st.error("Couldn't locate user row.")
+                                #else:
+                                #    header = ws.row_values(1)
+                                #    row_vals = ws.row_values(row_no)
+                                #    while len(row_vals) < len(header):
+                                #        row_vals.append("")
 
                                     # Update hashed password + force first_login = TRUE
-                                    new_h = bcrypt.hashpw(new_pw_plain.encode(), bcrypt.gensalt())
-                                    row_vals[header.index("hashed_password")] = base64.b64encode(new_h).decode()
-                                    row_vals[header.index("first_login")] = "TRUE"
+                                #    new_h = bcrypt.hashpw(new_pw_plain.encode(), bcrypt.gensalt())
+                                #    row_vals[header.index("hashed_password")] = base64.b64encode(new_h).decode()
+                                #    row_vals[header.index("first_login")] = "TRUE"
 
                                     # Write back
-                                    end_col_letter = chr(64 + len(header))
-                                    ws.update(f"A{row_no}:{end_col_letter}{row_no}", [row_vals])
-                                    get_user_credentials.clear()
-                                    clear_cache()
+                                #    end_col_letter = chr(64 + len(header))
+                                #    ws.update(f"A{row_no}:{end_col_letter}{row_no}", [row_vals])
+                                    reset_user_password(sel_email, base64.b64encode(
+                                        bcrypt.hashpw(new_pw_plain.encode(), bcrypt.gensalt())
+                                    ).decode())
                                     st.success("✅ Password reset — user must change it next login.")
                                     st.rerun()
-                            except APIError:
-                                st.error("Google API write error. Try again later.")
                             except Exception as e:
                                 st.error(f"Reset failed: {e}")
 
@@ -393,31 +395,33 @@ elif st.session_state.authenticated:
                             st.error("Please confirm deletion first.")
                         else:
                             try:
-                                ws = client.open_by_key(SHEET_ID).worksheet("Users")
-                                email_col = ws.col_values(ws.row_values(1).index("email") + 1)
-                                row_no = next((i for i, v in enumerate(email_col, start=1)
-                                            if v.strip().lower() == sel_email.strip().lower()), None)
-                                if not row_no or row_no == 1:
-                                    st.error("Couldn't locate user row.")
-                                else:
-                                    ws.delete_rows(row_no)
-                                    get_user_credentials.clear()
-                                    clear_cache()
-                                    st.success("✅ User removed.")
-                                    st.rerun()
-                            except APIError:
-                                st.error("Google API write error. Try again later.")
+                                #ws = client.open_by_key(SHEET_ID).worksheet("Users")
+                                #email_col = ws.col_values(ws.row_values(1).index("email") + 1)
+                                #row_no = next((i for i, v in enumerate(email_col, start=1)
+                                #            if v.strip().lower() == sel_email.strip().lower()), None)
+                                #if not row_no or row_no == 1:
+                                #    st.error("Couldn't locate user row.")
+                                #else:
+                                #    ws.delete_rows(row_no)
+                                #    get_user_credentials.clear()
+                                #    clear_cache()
+                                delete_user(sel_email)
+                                st.success("✅ User removed.")
+                                st.rerun()
+                            #except APIError:
+                            #    st.error("Google API write error. Try again later.")
                             except Exception as e:
                                 st.error(f"Delete failed: {e}")
 
         # To View Logins
         with st.expander("Login Activity", expanded=False):
             # --- Load cached sheet data safely ---
-            df_logs = safe_get_records("LoginLogs")
+            records = get_login_logs()
+            df_logs = pd.DataFrame(records)
 
             # --- Manual refresh button (clear cache + rerun) ---
             if st.button("🔄 Refresh Logs"):
-                clear_cache()
+                #clear_cache()
                 st.rerun()
 
             # --- Handle empty logs ---
@@ -426,7 +430,7 @@ elif st.session_state.authenticated:
                 st.stop()
 
             # --- Display main log dataframe ---
-            st.dataframe(df_logs, use_container_width=True)
+            st.dataframe(df_logs, width="stretch")
 
             # --- Ensure timestamp column is proper datetime ---
             if "timestamp" in df_logs.columns:
@@ -473,7 +477,7 @@ elif st.session_state.authenticated:
                     filtered = filtered[mask]
 
                 # --- Show filtered data ---
-                st.dataframe(filtered.sort_values("timestamp", ascending=False), use_container_width=True)
+                st.dataframe(filtered.sort_values("timestamp", ascending=False), width="stretch")
             else:
                 st.info("No log entries available yet.")
 
@@ -481,18 +485,19 @@ elif st.session_state.authenticated:
         # --- CRUD on Files ---
         with st.expander("File Management", expanded=False):
             # --- Load cached sheet data safely ---
-            df_files = safe_get_records("UploadedFiles")
+            file_records = get_uploaded_files()
+            df_files = pd.DataFrame(file_records)
 
             # --- Manual refresh button (clear cache + rerun) ---
             if st.button("🔄 Refresh Files"):
-                clear_cache()
+                #clear_cache()
                 st.rerun()
 
             # --- View files ---
             if df_files.empty:
                 st.info("No uploaded files found.")
             else:
-                st.dataframe(df_files, use_container_width=True)
+                st.dataframe(df_files, width="stretch")
 
             st.divider()
 
@@ -515,7 +520,7 @@ elif st.session_state.authenticated:
                         try:
                             url = upload_to_drive_and_log(uploaded_file, file_type, st.session_state.email, custom_name)
                             if url:
-                                clear_cache()
+                                #clear_cache()
                                 st.success("✅ Uploaded and logged successfully.")
                                 st.write(f"[View File]({url})")
                                 st.rerun()
@@ -561,30 +566,9 @@ elif st.session_state.authenticated:
                         st.error("Please confirm deletion first.")
                     else:
                         try:
-                            # ✅ Open the worksheet (only for the operation)
-                            files_ws = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
-
-                            header = [h.strip().lower() for h in files_ws.row_values(1)]
-                            if "file_name" not in header:
-                                st.error("Header 'file_name' not found in UploadedFiles sheet.")
-                            else:
-                                col_idx = header.index("file_name") + 1
-                                names = files_ws.col_values(col_idx)
-                                row_no = next(
-                                    (i for i, v in enumerate(names, start=1)
-                                    if str(v).strip() == str(to_delete).strip()),
-                                    None,
-                                )
-
-                                if not row_no or row_no == 1:
-                                    st.error("Couldn't locate file row (or tried to delete header).")
-                                else:
-                                    files_ws.delete_rows(row_no)
-                                    clear_cache()
-                                    st.success("✅ File record removed successfully.")
-                                    st.rerun()
-                        except APIError:
-                            st.error("Google API temporarily unavailable. Please try again later.")
+                            delete_uploaded_file(to_delete)
+                            st.success("✅ File record removed successfully.")
+                            st.rerun()
                         except Exception as e:
                             st.error(f"Failed to delete record: {e}")
 
@@ -627,7 +611,6 @@ elif st.session_state.authenticated:
 
                         if url:
                             # ✅ Clear cache so admins see it instantly in their tables
-                            clear_cache()
                             st.success("✅ Uploaded and logged successfully.")
                             st.write(f"[View File]({url})")
                             st.experimental_rerun()
@@ -638,8 +621,6 @@ elif st.session_state.authenticated:
 
     #Report Generator
     render_generate_report_section(
-        SHEET_ID=SHEET_ID,
-        SCOPE=SCOPE,
         process_budget=process_budget,
         process_expenses=process_expenses,
         get_usd_rates=get_usd_rates,

@@ -2,16 +2,15 @@
 
 import streamlit as st
 import pandas as pd
-import gspread
+#import gspread
 import re
 import requests
 from io import BytesIO
-from google.oauth2 import service_account
+from .db import get_uploaded_files
+#from google.oauth2 import service_account
 
 
 def render_generate_report_section(
-    SHEET_ID,
-    SCOPE,
     process_budget,
     process_expenses,
     get_usd_rates,
@@ -30,12 +29,14 @@ def render_generate_report_section(
     with st.expander("🧾 Generate Report", expanded=True):
 
         # Load Google Sheet logs
-        creds = service_account.Credentials.from_service_account_info(
-            dict(st.secrets["GOOGLE"]), scopes=SCOPE
-        )
-        client = gspread.authorize(creds)
-        upload_log = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
-        records = upload_log.get_all_records()
+        #creds = service_account.Credentials.from_service_account_info(
+        #    dict(st.secrets["GOOGLE"]), scopes=SCOPE
+        #)
+        #client = gspread.authorize(creds)
+        #upload_log = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
+        #records = upload_log.get_all_records()
+
+        records = get_uploaded_files()
 
         if not records:
             st.info("📭 No uploaded files yet. Please upload at least one budget and one expense file.")

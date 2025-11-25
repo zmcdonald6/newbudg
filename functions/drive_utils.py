@@ -4,11 +4,13 @@ import os
 import mimetypes
 from datetime import datetime
 import tempfile
-import gspread
 import streamlit as st
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+
+# NEW: Import db layer
+from .db import add_uploaded_file, get_uploaded_files
 
 # Constants
 SHEET_ID = "1VxrFw6txf_XFf0cxzMbPGHnOn8N5JGeeS0ve5lfLqCU"
@@ -20,21 +22,17 @@ SCOPE = [
     "https://www.googleapis.com/auth/drive.file"
 ]
 
-# Load credentials from Streamlit secrets
 creds = service_account.Credentials.from_service_account_info(
     dict(st.secrets["GOOGLE"]), scopes=SCOPE
 )
 
+
 def upload_to_drive_and_log(file, file_type, uploader_email, custom_name):
     """
-    Uploads a file to Google Drive, makes it public, and logs the upload in the UploadedFiles sheet.
-    Appends a tag to the saved filename based on the file_type:
-      - budget(opex)  -> ~opex
-      - budget(capex) -> ~capex
-      - expense       -> ~expense
-
-    Prevents duplicate file names (tagged) from being uploaded.
+    Upload a file to Google Drive and log metadata in MySQL.
+    The Google Sheets dependency is removed.
     """
+
     # Decide suffix based on file_type (case-insensitive)
     suffix_map = {
         "budget(opex)": "~opex",
@@ -44,22 +42,20 @@ def upload_to_drive_and_log(file, file_type, uploader_email, custom_name):
     suffix = suffix_map.get(str(file_type).strip().lower(), "")
     tagged_name = f"{custom_name}{suffix}.xlsx"
 
-    # Connect to Google Sheet
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(SHEET_ID).worksheet("UploadedFiles")
-    existing_files = [row[0] for row in sheet.get_all_values()[1:]]  # Skip header row if any
-
-    # Check for duplicate
-    if tagged_name in existing_files:
-        st.error(f"❌ A file named '{tagged_name}' already exists. Please choose a different name.")
+    # -------------------------------
+    # ❗ NEW: Check duplicates in MySQL
+    # -------------------------------
+    existing = [row["file_name"] for row in get_uploaded_files()]
+    if tagged_name in existing:
+        st.error(f"❌ A file named '{tagged_name}' already exists. Choose a different name.")
         return None
 
-    # Save uploaded file to temp path
+    # Save file temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
         tmp.write(file.getvalue())
         temp_path = tmp.name
 
-    # Initialize Drive service
+    # Google Drive service
     drive_service = build("drive", "v3", credentials=creds)
 
     # Prepare metadata
@@ -69,10 +65,9 @@ def upload_to_drive_and_log(file, file_type, uploader_email, custom_name):
         "mimeType": mime_type,
         "parents": [PARENT_FOLDER_ID],
     }
-
     media = MediaFileUpload(temp_path, mimetype=mime_type, resumable=False)
 
-    # Upload to Drive
+    # Upload file to Drive
     uploaded_file = drive_service.files().create(
         body=metadata,
         media_body=media,
@@ -81,8 +76,9 @@ def upload_to_drive_and_log(file, file_type, uploader_email, custom_name):
     ).execute()
 
     file_id = uploaded_file.get("id")
+    file_url = f"https://drive.google.com/uc?id={file_id}"
 
-    # Make it publicly accessible
+    # Make file publicly accessible
     try:
         drive_service.permissions().create(
             fileId=file_id,
@@ -92,24 +88,24 @@ def upload_to_drive_and_log(file, file_type, uploader_email, custom_name):
     except Exception as e:
         print("⚠️ Permission setting failed:", e)
 
-    file_url = f"https://drive.google.com/uc?id={file_id}"
-
-    # Delete temp file
+    # Remove temp file
     try:
         os.remove(temp_path)
     except Exception as e:
         print("⚠️ Failed to delete temp file:", e)
 
-    # Log in Google Sheet
+    # ----------------------------------------
+    # ❗ NEW: Log metadata to MySQL instead of Sheets
+    # ----------------------------------------
     try:
-        sheet.append_row([
-            tagged_name,
-            file_type,
-            uploader_email,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            file_url
-        ])
+        add_uploaded_file(
+            file_name=tagged_name,
+            file_type=file_type,
+            uploader_email=uploader_email,
+            file_url=file_url
+        )
     except Exception as e:
-        print("Failed to log file to sheet:", e)
+        st.error(f"⚠️ Failed to log file metadata to MySQL: {e}")
+        return None
 
     return file_url
