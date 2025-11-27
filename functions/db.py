@@ -7,6 +7,8 @@ import streamlit as st
 from datetime import datetime
 import requests
 import pandas as pd
+import bcrypt
+import base64
 
 # Initial database connection
 def get_db():
@@ -52,7 +54,7 @@ def get_all_users():
         return c.fetchall()
 
 
-def add_user(name, username, email, hashed_pw, role="user"):
+def add_user(name: str, username: str, email: str, hashed_pw:str, role="user"):
     db = get_db()
     with db.cursor() as c:
         c.execute("""
@@ -207,24 +209,25 @@ def load_budget_state_monthly(file_name: str):
 
 def save_budget_state_monthly(file_name, df_melted, user_email):
     """
-    Saves budget-state (the “classification editor” monthly state).
-    Replaces the entire file set each save.
+    Saves budget-state monthly classification using MySQL UPSERT.
+    Only inserts new rows or updates existing ones.
     """
     db = get_db()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     rows = df_melted.to_dict(orient="records")
 
     with db.cursor() as c:
-        # remove existing rows for this file
-        c.execute("DELETE FROM budget_state WHERE file_name = %s", (file_name,))
-
-        # insert new
         for r in rows:
             c.execute("""
                 INSERT INTO budget_state
                 (file_name, category, subcategory, month, amount, status_category, updated_by, updated_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+
+                ON DUPLICATE KEY UPDATE
+                    amount = VALUES(amount),
+                    status_category = VALUES(status_category),
+                    updated_by = VALUES(updated_by),
+                    updated_at = VALUES(updated_at)
             """, (
                 file_name,
                 r["Category"],
@@ -237,6 +240,7 @@ def save_budget_state_monthly(file_name, df_melted, user_email):
             ))
 
     return True
+
 
 
 
@@ -264,3 +268,33 @@ def get_ip():
         return response.text
     except:
         return "Unavailable"
+    
+def seed_admin_user():
+    """
+    Generates a default admin user with user defined credentials
+    """
+    x = run_query(sql = "select count(*) from users")
+    try:
+
+        #Check if any user exists
+        if x[0].get("count(*)") < 1:
+
+            #Inserting user details
+            name = st.secrets['admin']['name']
+            email = st.secrets['admin']['email']
+            username = st.secrets['admin']['username']
+            password = str(st.secrets['admin']['password'])
+            role = st.secrets['admin']['role']
+
+            #Hashing password
+            hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+            encoded = base64.b64encode(hashed).decode()
+
+            #Inserting user
+            add_user(name, username, email, encoded, role)
+            print ("No users found, admin user seeded")
+        else:
+            pass
+
+    except Exception as e:
+        st.error(f"Error seeding user {e}")

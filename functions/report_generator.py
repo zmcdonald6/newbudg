@@ -18,7 +18,7 @@ def render_generate_report_section(
     dashboard,
     load_budget_state_monthly,
     save_budget_state_monthly,
-    variance_color_style,
+    variance_colour_style,
     get_variance_status
 ):
     """This function contains the FULL Generate Report section EXACTLY as in main.py."""
@@ -220,7 +220,7 @@ def render_generate_report_section(
         with st.expander("📄 Expenditures (USD) — Subcategory", expanded=False):
             styled_final = (
                 final_view.style
-                .apply(variance_color_style, axis=1)
+                .apply(variance_colour_style, axis=1)
                 .format({
                     "Amount Budgeted": "{:,.2f}",
                     "Amount Spent (USD)": "{:,.2f}",
@@ -266,7 +266,7 @@ def render_generate_report_section(
         with st.expander("📊Expenditure Summary (USD) — Category", expanded=False):
             styled_cat = (
                 cat_view.style
-                .apply(variance_color_style, axis=1)
+                .apply(variance_colour_style, axis=1)
                 .format({
                     "Amount Budgeted": "{:,.2f}",
                     "Amount Spent (USD)": "{:,.2f}",
@@ -457,7 +457,7 @@ def render_generate_report_section(
                         ],
                         axis=1
                     )
-                    .apply(variance_color_style, axis=1)
+                    .apply(variance_colour_style, axis=1)
                     .format({
                         "Amount Budgeted": lambda v, is_oob=None: "OOB" if is_oob else f"{v:,.2f}",
                         "Amount Spent (USD)": "{:,.2f}",

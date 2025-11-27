@@ -4,6 +4,10 @@ import requests
 import streamlit as st
 from datetime import datetime, timedelta
 
+"""
+Contains Helper functions that assist in Converting expense amounts into USD.
+"""
+
 FX_TTL_MINUTES = 60  # cache FX for an hour
 
 # -------- internal helpers --------
@@ -19,6 +23,12 @@ def _validate_usd_base(rates: dict) -> bool:
         return False
 
 def _fetch_exchangerate_host() -> tuple[dict, str]:
+    """
+    Fetches the latest exchange rates using the exchangerate.host API, USD as the base currency
+    
+    :return: It returns a dictionary of exchange with their currency codes along with a string stating where the values were fetched from.
+    :rtype: tuple[rates, "exchangerate.host"]
+    """
     resp = requests.get(
         "https://api.exchangerate.host/latest",
         params={"base": "USD"},
@@ -46,7 +56,8 @@ def _fetch_er_api() -> tuple[dict, str]:
 
 def get_usd_rates():
     """
-    Returns dict: {'USD': 1.0, 'JMD': 155.2, 'TTD': 6.78, 'EUR': 0.92, ...}
+    :rtype: dict
+    :Return: dict: {'USD': 1.0, 'JMD': 155.2, 'TTD': 6.78, 'EUR': 0.92, ...}
     meaning 1 USD = X units of that currency.
     Uses session cache, multi-provider fallback, and last-known-good rescue.
     """
@@ -91,6 +102,9 @@ def detect_currency_from_row(row: pd.Series, df_expense: pd.DataFrame) -> str | 
     return None
 
 def parse_amount_to_number(a) -> float:
+    """
+    Cleans up data to return a docstring
+    """
     #cleaning up data to get plain numbers to convert
     if pd.isna(a):
         return np.nan

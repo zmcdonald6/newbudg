@@ -1,8 +1,9 @@
 #ignore secrets
-.streamlit/
+secrets.toml
 __pycache__/
 test_connection.py
 ~$*.xlsx
 ExpenseTemplateTest.xlsx
-requirements.txt
 Throwaways/
+tests/
+dumps/
