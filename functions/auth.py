@@ -461,12 +461,12 @@ def render_first_login_reset():
 # ============================================================
 def auth_flow():
     init_auth_session()
-    cookie_auto_login()
+    #cookie_auto_login()
     inactivity_timeout()
 
-    if COOKIE_NAME in cookies and not st.session_state.get("just_logged_in", False):
-        st.session_state.just_logged_in = True
-        st.success(f"👋 Welcome back, {st.session_state.name}!")
+    #if COOKIE_NAME in cookies and not st.session_state.get("just_logged_in", False):
+    #    st.session_state.just_logged_in = True
+    #    st.success(f"👋 Welcome back, {st.session_state.name}!")
 
     # Not logged in
     if not st.session_state.authenticated and not st.session_state.force_pw_change:
