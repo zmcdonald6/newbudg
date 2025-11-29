@@ -261,29 +261,29 @@ from functions.db import (
 # ============================================================
 # CLIENT-ID FOR PER-USER COOKIE ENCRYPTION
 # ============================================================
-if "client_id" not in st.session_state:
-    st.session_state.client_id = base64.b64encode(os.urandom(32)).decode()
+# *if "client_id" not in st.session_state:
+#     st.session_state.client_id = base64.b64encode(os.urandom(32)).decode()
 
 
-# ============================================================
-# SAFE COOKIE MANAGER INITIALIZATION (ONCE PER SESSION)
-# ============================================================
-if "cookies" not in st.session_state:
-    cookies = EncryptedCookieManager(
-        prefix=st.secrets["cookies"]["prefix"],
-        password=st.secrets["cookies"]["password"],
-        key=st.session_state.client_id
-    )
-    st.session_state.cookies = cookies
-else:
-    cookies = st.session_state.cookies
+# # ============================================================
+# # SAFE COOKIE MANAGER INITIALIZATION (ONCE PER SESSION)
+# # ============================================================
+# if "cookies" not in st.session_state:
+#     cookies = EncryptedCookieManager(
+#         prefix=st.secrets["cookies"]["prefix"],
+#         password=st.secrets["cookies"]["password"],
+#         key=st.session_state.client_id
+#     )
+#     st.session_state.cookies = cookies
+# else:
+#     cookies = st.session_state.cookies
 
-# CookieManager must be ready before use
-if not cookies.ready():
-    st.stop()
+# # CookieManager must be ready before use
+# if not cookies.ready():
+#     st.stop()
 
-COOKIE_NAME = st.secrets["cookies"]["name"]
-COOKIE_LIFETIME_SECONDS = 24 * 3600  # 1 day
+# COOKIE_NAME = st.secrets["cookies"]["name"]
+# COOKIE_LIFETIME_SECONDS = 24 * 3600  # 1 day
 
 
 # ============================================================
