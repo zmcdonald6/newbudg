@@ -304,38 +304,38 @@ def init_auth_session():
             st.session_state[k] = v
 
 
-# ============================================================
-# COOKIE → AUTO LOGIN (WITH EXPIRATION)
-# ============================================================
-def cookie_auto_login():
-    if COOKIE_NAME not in cookies:
-        return
+# # ============================================================
+# # COOKIE → AUTO LOGIN (WITH EXPIRATION)
+# # ============================================================
+# def cookie_auto_login():
+#     if COOKIE_NAME not in cookies:
+#         return
 
-    raw_value = cookies[COOKIE_NAME]  # stored as: email|timestamp
+#     raw_value = cookies[COOKIE_NAME]  # stored as: email|timestamp
 
-    try:
-        email, ts = raw_value.split("|")
-        ts = int(ts)
-    except:
-        del cookies[COOKIE_NAME]
-        cookies.save()
-        return
+#     try:
+#         email, ts = raw_value.split("|")
+#         ts = int(ts)
+#     except:
+#         del cookies[COOKIE_NAME]
+#         cookies.save()
+#         return
 
-    # Expired cookie?
-    if time.time() - ts > COOKIE_LIFETIME_SECONDS:
-        del cookies[COOKIE_NAME]
-        cookies.save()
-        return
+#     # Expired cookie?
+#     if time.time() - ts > COOKIE_LIFETIME_SECONDS:
+#         del cookies[COOKIE_NAME]
+#         cookies.save()
+#         return
 
-    # Load user
-    user = get_user_by_email(email)
-    if user:
-        st.session_state.authenticated = True
-        st.session_state.email = email
-        st.session_state.name = user["name"]
-        st.session_state.user_record = user
-        st.session_state.force_pw_change = False
-        st.session_state.last_active = datetime.now()
+#     # Load user
+#     user = get_user_by_email(email)
+#     if user:
+#         st.session_state.authenticated = True
+#         st.session_state.email = email
+#         st.session_state.name = user["name"]
+#         st.session_state.user_record = user
+#         st.session_state.force_pw_change = False
+#         st.session_state.last_active = datetime.now()
 
 
 # ============================================================
@@ -366,9 +366,9 @@ def logout_user():
     st.session_state.user_record = {}
     st.session_state.force_pw_change = False
 
-    if COOKIE_NAME in cookies:
-        del cookies[COOKIE_NAME]
-        cookies.save()
+    # if COOKIE_NAME in cookies:
+    #     del cookies[COOKIE_NAME]
+    #     cookies.save()
 
 
 # ============================================================
@@ -413,8 +413,8 @@ def render_login_screen():
 
             # Save persistent cookie
             token_value = f"{email}|{int(time.time())}"
-            cookies[COOKIE_NAME] = token_value
-            cookies.save()
+            # cookies[COOKIE_NAME] = token_value
+            # cookies.save()
 
             st.rerun()
 
@@ -449,8 +449,8 @@ def render_first_login_reset():
 
             # Refresh cookie timestamp
             token_value = f"{st.session_state.email}|{int(time.time())}"
-            cookies[COOKIE_NAME] = token_value
-            cookies.save()
+            # cookies[COOKIE_NAME] = token_value
+            # cookies.save()
 
             st.success("Password updated successfully.")
             st.rerun()
