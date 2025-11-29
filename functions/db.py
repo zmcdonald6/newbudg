@@ -10,23 +10,89 @@ import pandas as pd
 import bcrypt
 import base64
 
+import pathlib
+import tempfile
+
+#Database config section
+dbsecrets = st.secrets["MYSQL"]
+
+#ssl authentication files.
+ssl_options = {
+    "ca": dbsecrets["sslserverca"],
+    "cert": dbsecrets["sslclientcert"],
+    "key": dbsecrets["sslclientkey"],
+    "check_hostname": dbsecrets["sslcheck_hostname"]
+}
+
+def write_cert(b64_data, filename):
+    """Function to decode base64 and write to a temportaty file"""
+    decoded = base64.b64decode(b64_data)
+    f = tempfile.NamedTemporaryFile(delete=False)
+    f.write(decoded)
+    f.flush()
+    return f.name
+
 # Initial database connection
 def get_db():
-    """Returns a MySQL connection using Streamlit secrets"""
-    try:
-        connection = pymysql.connect(
-            host=st.secrets["MYSQL"]["host"],
-            user=st.secrets["MYSQL"]["user"],
-            password=st.secrets["MYSQL"]["password"],
-            database=st.secrets["MYSQL"]["database"],
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=True,
-            charset="utf8mb4"
-        )
-        return connection
-    except pymysql.Error as e:
-        st.error(f"Error connecting to MySQL database: {e}")
-        return None
+
+    home_lib = pathlib.Path.home()
+    target_path = home_lib/"private"
+    dbsecrets = st.secrets["MYSQL"]
+    
+    
+
+    if target_path.is_dir():
+        """Returns a MySQL connection using Streamlit secrets"""
+        
+        #ssl authentication.
+        ssl_options = {
+        "ca": dbsecrets["sslserverca"],
+        "cert": dbsecrets["sslclientcert"],
+        "key": dbsecrets["sslclientkey"],
+        "check_hostname": dbsecrets["sslcheck_hostname"]
+        }
+
+        try:
+            connection = pymysql.connect(
+                host= dbsecrets["host"],
+                user= dbsecrets["user"],
+                password= dbsecrets["password"],
+                database= dbsecrets["database"],
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True,
+                charset="utf8mb4",
+                ssl = ssl_options
+            )
+            return connection
+        except pymysql.Error as e:
+            st.error(f"Error connecting to MySQL database: {e}")
+            return None
+    else:
+        ca_path = write_cert(dbsecrets["sslserverca_b64"], "server-ca.pem")
+        cert_path = write_cert(dbsecrets["sslclientcert"], "client-cert.pem")
+        key_path = write_cert(dbsecrets["sslclientkey"], "client-key.pem")
+
+        ssl_options = {
+            "ca": ca_path,
+            "cert": cert_path,
+            "key": key_path,
+            "check_hostname": False
+        }
+        try:
+            connection = pymysql.connect(
+                host=st.secrets["MYSQL"]["host"],
+                user=st.secrets["MYSQL"]["user"],
+                password=st.secrets["MYSQL"]["password"],
+                database=st.secrets["MYSQL"]["database"],
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True,
+                charset="utf8mb4",
+                ssl = ssl_options
+            )
+            return connection
+        except pymysql.Error as e:
+            st.error(f"Error connecting to MySQL database: {e}")
+            return None
 
 
 
