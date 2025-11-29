@@ -14,12 +14,19 @@ from functions.db import (
     get_ip
 )
 
+browser_key = bcrypt.hashpw(
+    f"{st.request.headers.get('user-agent')}_{get_ip()}".encode(),
+    bcrypt.gensalt()
+).decode()
+
+
 # ============================================================
 # COOKIE MANAGER (using secrets)
 # ============================================================
 cookies = EncryptedCookieManager(
     prefix=st.secrets["cookies"]["prefix"],
     password=st.secrets["cookies"]["password"],
+    key = browser_key
 )
 
 # EncryptedCookieManager must be ready before using cookies
