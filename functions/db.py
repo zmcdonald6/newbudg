@@ -61,7 +61,6 @@ def get_db():
             cursorclass=pymysql.cursors.DictCursor,
             autocommit=True,
             charset="utf8mb4",
-            ssl = ssl_options
         )
         return connection
     except pymysql.Error as e:
@@ -90,7 +89,7 @@ def get_db():
 #            charset="utf8mb4",
 #            ssl = ssl_options
 #        )
-        return connection
+#        return connection
     except pymysql.Error as e:
         st.error(f"Error connecting to MySQL database: {e}")
         return None
