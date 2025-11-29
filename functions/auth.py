@@ -3,6 +3,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import bcrypt
 import base64
+import os
 from datetime import datetime, timedelta
 
 from streamlit_cookies_manager import EncryptedCookieManager
@@ -14,11 +15,9 @@ from functions.db import (
     get_ip
 )
 
-browser_key = bcrypt.hashpw(
-    f"{st.request.headers.get('user-agent')}_{get_ip()}".encode(),
-    bcrypt.gensalt()
-).decode()
-
+if "client_id" not in st.session_state:
+    st.session_state.client_id = base64.b64encode(os.urandom(32)).decode()
+    
 
 # ============================================================
 # COOKIE MANAGER (using secrets)
@@ -26,7 +25,7 @@ browser_key = bcrypt.hashpw(
 cookies = EncryptedCookieManager(
     prefix=st.secrets["cookies"]["prefix"],
     password=st.secrets["cookies"]["password"],
-    key = browser_key
+    key = st.session_state.client_id
 )
 
 # EncryptedCookieManager must be ready before using cookies
