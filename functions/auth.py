@@ -25,7 +25,7 @@ if "client_id" not in st.session_state:
 cookies = EncryptedCookieManager(
     prefix=st.secrets["cookies"]["prefix"],
     password=st.secrets["cookies"]["password"],
-    key = st.session_state.client_id
+    key_params_cookie = st.session_state.client_id
 )
 
 # EncryptedCookieManager must be ready before using cookies
